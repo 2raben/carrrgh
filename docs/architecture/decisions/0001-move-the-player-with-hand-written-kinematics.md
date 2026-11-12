@@ -1,6 +1,7 @@
 ---
 tags: [adr]
-status: accepted
+status: superseded
+superseded-by: [0004-drive-in-road-relative-coordinates.md]
 date: 2026-11-12
 sources:
   - Cargo.toml
@@ -8,14 +9,16 @@ sources:
   - src/simulation.rs
   - src/visuals.rs
   - src/tests.rs
-  - ../../pitches/starter-platformer/pitch--starter-platformer.md
 ---
 
 # 0001 — Move the player with hand-written kinematics on a fixed timestep
 
+Superseded by [ADR 0004](0004-drive-in-road-relative-coordinates.md) when Car Drive
+replaced the platformer. The rationale below records the original implementation.
+
 ## Context
 
-The [starter platformer pitch](../../pitches/starter-platformer/pitch--starter-platformer.md)
+The former starter platformer pitch
 needs one box that runs, jumps, and lands on axis-aligned tile geometry, with
 behaviour that tests can check exactly. The template should also show readers
 where movement code lives rather than hide it inside an engine.

@@ -14,7 +14,7 @@ or deadline only if your project wants one.
 
 Save pitches as `docs/pitches/<topic>/pitch--<slug>.md` using the
 [pitch template](docs/pitches/README.md#template), and add them to the pitch index.
-The [starter platformer pitch](docs/pitches/starter-platformer/pitch--starter-platformer.md)
+The [Car Drive pitch](docs/pitches/car-drive/pitch--car-movements.md)
 is a worked example of the sections: Problem, Solution, Security, Rabbit Holes, and
 No-Gos. Explain relevant security concerns or why none apply. Keep Excalidraw
 breadboards and rough sketches beside the pitch and link them from Solution when
@@ -82,19 +82,24 @@ For rendering, input, or gameplay changes, also run:
 mise run run
 ```
 
-Check the affected behavior manually in the starter level:
+Check the affected behavior manually in Car Drive:
 
-- A/D and the arrow keys run; releasing stops quickly. The player faces its
-  direction of travel, and motion looks smooth.
-- Holding jump clears the wall before the last gap; tapping gives a short hop.
-  There are no midair jumps.
-- The player cannot pass through walls, ceilings, or the floating platform.
-- Coins disappear on touch and the HUD count rises.
-- Falling into a gap returns to the start with coins and time kept.
-- Touching the flag stops the clock and shows the finish cue; only Restart works
-  until then. Restart restores all coins, the start position, and the clock.
-- A controller runs with the stick or D-pad, jumps with South, and restarts with
-  Select. Escape quits.
+- A/D and Left/Right steer continuously and stop on release. Neither road edge
+  can be crossed; the camera keeps the full road visible.
+- Traffic fronts and direction remain readable. Same-direction cars are caught
+  slowly; opposing cars approach faster. Cars arrive individually on random lanes
+  at varying intervals while earlier cars remain visible. Check that gaps remain
+  usable, including when boosting and releasing boost.
+- Space boosts, the gauge drains, and release restores cruising and recharges.
+  Depletion ends boost; release is required to boost again.
+- Hits cost one heart and show a steady protection outline. One overlapping car
+  cannot drain all lives. Boost gives no collision immunity.
+- The third hit freezes traffic and distance and shows the result. Steering and
+  boost do nothing until restart. R restores three hearts, full energy, initial
+  position, zero distance and initial difficulty with a fresh random traffic sequence.
+- The left stick or D-pad steers; South boosts; Select restarts. Escape quits.
+- Check a resized window for readable HUD and road; note that the fixed view
+  stretches at unusual aspect ratios.
 
 Record what was checked; if no graphical environment is available, report that
 limitation.

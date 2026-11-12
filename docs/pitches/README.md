@@ -7,8 +7,8 @@ documentation corrections do not need one. See
 
 Save each pitch as `docs/pitches/<topic>/pitch--<slug>.md`, and keep breadboards,
 fat-marker sketches (for example Excalidraw files), and reference images beside
-it. The [starter platformer pitch](starter-platformer/pitch--starter-platformer.md)
-is a worked example.
+it. The [Car Drive pitch](car-drive/pitch--car-movements.md) includes a reference
+sketch and an editable Excalidraw drawing.
 
 ## Template
 
@@ -44,4 +44,4 @@ What this pitch explicitly does not include.
 
 | Pitch | Status |
 | --- | --- |
-| [Starter platformer](starter-platformer/pitch--starter-platformer.md) | implemented |
+| [Car Drive — car movements](car-drive/pitch--car-movements.md) | implemented; replaces the starter platformer |

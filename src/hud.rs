@@ -1,22 +1,22 @@
-//! On-screen text: run progress, a controls reminder, and the finish cue.
-
-use bevy::prelude::*;
-
+//! Distance, three hearts, boost gauge, and restart instructions.
 use crate::run::Run;
 use crate::visuals::palette;
+use bevy::prelude::*;
 
 #[derive(Component)]
 struct Progress;
-
 #[derive(Component)]
 struct FinishCue;
+#[derive(Component)]
+struct BoostBar;
+#[derive(Component)]
+struct Heart(u8);
 
 pub struct HudPlugin;
-
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, show_run.run_if(resource_changed::<Run>));
+            .add_systems(Update, show_run);
     }
 }
 
@@ -35,46 +35,103 @@ fn panel(node: Node) -> impl Bundle {
     (
         Node {
             position_type: PositionType::Absolute,
-            padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
+            padding: UiRect::all(Val::Px(18.0)),
             ..node
         },
         BackgroundColor(palette::PANEL),
     )
 }
 
+// Geometry avoids depending on optional heart glyphs in the bundled font.
+fn heart(index: u8) -> impl Bundle {
+    let part = |left, top, round| {
+        (
+            Heart(index),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(left),
+                top: Val::Px(top),
+                width: Val::Px(18.0),
+                height: Val::Px(18.0),
+                border_radius: if round {
+                    BorderRadius::MAX
+                } else {
+                    BorderRadius::ZERO
+                },
+                ..default()
+            },
+            BackgroundColor(Color::srgb(1.0, 0.4, 0.38)),
+        )
+    };
+    (
+        Node {
+            width: Val::Px(32.0),
+            height: Val::Px(32.0),
+            ..default()
+        },
+        children![
+            (
+                part(7.0, 10.0, false),
+                UiTransform::from_rotation(Rot2::radians(std::f32::consts::FRAC_PI_4))
+            ),
+            part(0.6, 3.6, true),
+            part(13.4, 3.6, true),
+        ],
+    )
+}
+
 fn spawn_hud(mut commands: Commands) {
     commands.spawn((
-        Name::new("Progress"),
-        Progress,
         panel(Node {
-            top: Val::Px(10.0),
-            left: Val::Px(10.0),
+            top: Val::Px(20.0),
+            left: Val::Px(20.0),
+            width: Val::Px(230.0),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(15.0),
             ..default()
         }),
-        text("", 20.0),
+        children![
+            text("CAR DRIVE", 28.0),
+            text("FIND YOUR WAY", 13.0),
+            (
+                Node {
+                    column_gap: Val::Px(12.0),
+                    ..default()
+                },
+                children![heart(0), heart(1), heart(2),]
+            ),
+            (Progress, text("", 20.0)),
+            text("BOOST / SPACE", 15.0),
+            (
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(12.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.26, 0.3)),
+                children![(
+                    BoostBar,
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(palette::BLUE)
+                ),]
+            ),
+            text("Release to recharge.\nBoost adds speed, not armor.", 14.0),
+        ],
     ));
+    commands.spawn((panel(Node { bottom: Val::Px(20.0), left: Val::Px(20.0), ..default() }), text("A / D or Left / Right   Steer\nSPACE   Boost     R   Restart     ESC   Quit\nController: Stick / D-pad / South / Select", 14.0)));
     commands.spawn((
-        Name::new("Controls reminder"),
-        panel(Node {
-            bottom: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        }),
-        text(
-            "A/D or Left/Right: run    Space/W/Up: jump (hold for higher)    R: restart    Esc: quit",
-            15.0,
-        ),
-    ));
-    commands.spawn((
-        Name::new("Finish cue"),
         FinishCue,
         panel(Node {
-            top: Val::Percent(35.0),
+            top: Val::Percent(38.0),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
         }),
-        text("", 32.0),
+        text("", 30.0),
         TextLayout::justify(Justify::Center),
         Visibility::Hidden,
     ));
@@ -84,17 +141,28 @@ fn show_run(
     run: Res<Run>,
     mut progress: Query<&mut Text, (With<Progress>, Without<FinishCue>)>,
     mut finish: Query<(&mut Text, &mut Visibility), With<FinishCue>>,
+    mut bars: Query<&mut Node, With<BoostBar>>,
+    mut hearts: Query<(&Heart, &mut BackgroundColor)>,
 ) {
-    let summary = format!(
-        "Coins {}/{}    Time {:.1} s",
-        run.coins, run.total_coins, run.elapsed
-    );
     for mut text in &mut progress {
-        text.0.clone_from(&summary);
+        text.0 = format!("{:06.0} m", run.distance / 10.0);
+    }
+    for mut node in &mut bars {
+        node.width = Val::Percent(run.energy * 100.0);
+    }
+    for (heart, mut color) in &mut hearts {
+        color.0 = if heart.0 < run.lives {
+            Color::srgb(1.0, 0.4, 0.38)
+        } else {
+            Color::srgb(0.25, 0.29, 0.33)
+        };
     }
     for (mut text, mut visibility) in &mut finish {
         if run.finished {
-            text.0 = format!("Goal!  {summary}\nPress R to play again");
+            text.0 = format!(
+                "END OF THE ROAD\n{:.0} metres\nR / Select to drive again",
+                run.distance / 10.0
+            );
             *visibility = Visibility::Inherited;
         } else {
             *visibility = Visibility::Hidden;

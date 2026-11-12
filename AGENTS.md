@@ -1,10 +1,10 @@
-# Working in this Bevy template
+# Working on Car Drive
 
-A Rust 2024 game built with Bevy 0.20. The current implementation is the starter
-platformer from the [starter platformer pitch](docs/pitches/starter-platformer/pitch--starter-platformer.md):
-one level from a text map, a player who runs and jumps with hand-written kinematics,
-coins, a goal flag, a following camera, and a HUD. Use the versions in `Cargo.toml`
-and the dependencies pinned by `Cargo.lock`.
+A Rust 2024 game built with Bevy 0.20. The current implementation is
+[Car Drive](docs/pitches/car-drive/pitch--car-movements.md): a three-lane arcade
+driver with automatic forward motion, continuous steering, traffic, boost,
+three lives and restart. It replaces the starter platformer. Use the versions
+in `Cargo.toml` and dependencies pinned by `Cargo.lock`.
 
 ## Start here
 
@@ -15,8 +15,8 @@ for significant choices and their rationale.
 
 - `src/main.rs`: application composition and window configuration.
 - `src/simulation.rs`, `level.rs`, `player.rs`, `run.rs`: the headless simulation
-  (plugin and fixed-step ordering, the tile map, movement and collision, and the
-  run rules for coins, goal, falling out, and restart).
+  (plugin and fixed-step ordering, road geometry and random traffic, steering,
+  boost, swept collision, damage, game over, and restart).
 - `src/input.rs`, `visuals.rs`, `camera.rs`, `hud.rs`: device input, drawing and
   render interpolation, the camera, and on-screen text.
 - `src/tests.rs`: headless simulation tests of movement and the run rules.

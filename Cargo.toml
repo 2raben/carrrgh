@@ -3,7 +3,7 @@ name = "bevy-template"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97.1"
-description = "A Bevy game template with a small 2D platformer starter"
+description = "Car Drive: a three-lane arcade driving game"
 publish = false
 
 [dependencies]
@@ -12,6 +12,7 @@ bevy = { version = "0.20.1", default-features = false, features = [
     "audio",
     "ui",
 ] }
+fastrand = "2.5.0"
 
 [profile.dev]
 opt-level = 1

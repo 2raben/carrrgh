@@ -1,271 +1,349 @@
-//! Headless simulation tests: the real game systems run at the fixed timestep
-//! with inputs written directly to [`Controls`]. No window or GPU is needed.
-
-use std::time::Duration;
-
-use bevy::prelude::*;
-use bevy::time::TimeUpdateStrategy;
-
-use crate::level::{Level, TILE};
-use crate::player::{Controls, Grounding, Player, PlayerTuning, Position, Velocity};
-use crate::run::{Coin, Run};
+//! Deterministic checks through the actual fixed-step simulation.
+use crate::level::{
+    CAR_SIZE, ESCAPE_SPACING, LANES, PLAYER_START, ROAD_HALF_WIDTH, TRAFFIC_SPACING, Traffic,
+    TrafficFlow, blocks_all_lanes,
+};
+use crate::player::{Controls, Player, Position, PreviousPosition};
+use crate::run::{Run, swept_hit};
 use crate::simulation::SimulationPlugin;
+use bevy::{prelude::*, time::TimeUpdateStrategy};
 
-/// Bevy's default fixed timestep; each update advances exactly one step.
-const STEP: f32 = 1.0 / 64.0;
-
-/// A flat floor two tiles thick with the player on it and the goal far away.
-const FLAT: &[&str] = &[
-    "..............................",
-    "..............................",
-    "..............................",
-    "..............................",
-    "..............................",
-    "..P..........................G",
-    "##############################",
-    "##############################",
-];
-
-struct Sim {
-    app: App,
-}
-
+struct Sim(App);
 impl Sim {
-    fn new(map: &[&str]) -> Self {
+    fn new() -> Self {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, SimulationPlugin))
-            .insert_resource(Level::parse(map).expect("test map is valid"))
-            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f32(
-                STEP,
-            )));
+            .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+            .insert_resource(TrafficFlow {
+                cooldown: 0.0,
+                rng: fastrand::Rng::with_seed(7),
+            });
         app.finish();
         app.cleanup();
-        let mut sim = Self { app };
-        // The first update runs startup; later ones advance one fixed step each.
-        sim.app.update();
-        sim
+        app.update();
+        Self(app)
     }
-
-    fn steps(&mut self, count: usize) {
-        for _ in 0..count {
-            self.app.update();
+    fn steps(&mut self, n: usize) {
+        for _ in 0..n {
+            self.0.update();
         }
     }
-
-    fn seconds(&mut self, seconds: f32) {
-        self.steps((seconds / STEP).round() as usize);
-    }
-
     fn controls(&mut self) -> Mut<'_, Controls> {
-        self.app.world_mut().resource_mut::<Controls>()
+        self.0.world_mut().resource_mut::<Controls>()
     }
-
-    fn press_jump(&mut self) {
-        let mut controls = self.controls();
-        controls.jump_pressed = true;
-        controls.jump_held = true;
-    }
-
-    fn player<T: Component + Copy>(&mut self) -> T {
-        let world = self.app.world_mut();
-        *world
-            .query_filtered::<&T, With<Player>>()
-            .single(world)
-            .expect("one player")
-    }
-
-    fn feet(&mut self) -> Vec2 {
-        self.player::<Position>().0
-    }
-
-    fn grounded(&mut self) -> bool {
-        self.player::<Grounding>().grounded
-    }
-
     fn run(&self) -> Run {
-        self.app.world().resource::<Run>().clone()
+        self.0.world().resource::<Run>().clone()
     }
-
-    fn coins_left(&mut self) -> usize {
-        let world = self.app.world_mut();
-        world.query_filtered::<(), With<Coin>>().iter(world).count()
+    fn position(&mut self) -> Vec2 {
+        let world = self.0.world_mut();
+        world
+            .query_filtered::<&Position, With<Player>>()
+            .single(world)
+            .unwrap()
+            .0
     }
-
-    fn tuning(&self) -> PlayerTuning {
-        *self.app.world().resource::<PlayerTuning>()
+    fn car(&mut self, at: Vec2, speed: f32) -> Entity {
+        self.0
+            .world_mut()
+            .spawn((
+                Traffic { speed, hit: false },
+                Position(at),
+                PreviousPosition(at),
+            ))
+            .id()
     }
+    fn quiet(&mut self) {
+        self.0.world_mut().resource_mut::<TrafficFlow>().cooldown = 10000.0;
+    }
+}
 
-    /// Steps until the player lands again, returning the highest feet height.
-    fn apex_until_landing(&mut self) -> f32 {
-        let mut apex = self.feet().y;
-        self.steps(2);
-        for _ in 0..256 {
-            apex = apex.max(self.feet().y);
-            if self.grounded() {
-                return apex;
-            }
-            self.steps(1);
+#[test]
+fn steering_stops_on_release_and_stays_inside_both_edges() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.controls().move_x = -1.0;
+    sim.steps(128);
+    assert_eq!(sim.position().x, -ROAD_HALF_WIDTH + CAR_SIZE.x * 0.5);
+    sim.controls().move_x = 1.0;
+    sim.steps(128);
+    assert_eq!(sim.position().x, ROAD_HALF_WIDTH - CAR_SIZE.x * 0.5);
+    sim.controls().move_x = -0.5;
+    sim.steps(10);
+    sim.controls().move_x = 0.0;
+    let stopped = sim.position();
+    sim.steps(10);
+    assert_eq!(sim.position(), stopped);
+    assert_eq!(stopped.y, PLAYER_START.y);
+    assert!(sim.run().distance > 0.0);
+}
+
+#[test]
+fn boost_increases_distance_depletes_and_recharges_without_pulsing() {
+    let mut cruise = Sim::new();
+    cruise.quiet();
+    cruise.steps(64);
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.controls().boost = true;
+    sim.steps(64);
+    assert!(sim.run().distance > cruise.run().distance * 1.5);
+    assert!(sim.run().energy < 0.7);
+    sim.steps(110);
+    assert!(sim.run().exhausted);
+    assert!(!sim.run().boosting);
+    let distance = sim.run().distance;
+    sim.steps(64);
+    assert!((sim.run().distance - distance - 300.0).abs() < 0.01);
+    sim.controls().boost = false;
+    sim.steps(400);
+    assert_eq!(sim.run().energy, 1.0);
+    assert!(!sim.run().exhausted);
+    sim.controls().boost = true;
+    sim.steps(1);
+    assert!(sim.run().boosting);
+}
+
+#[test]
+fn every_1500_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
+    let mut baseline = Sim::new();
+    baseline.steps(1);
+    let base_interval = baseline.0.world().resource::<TrafficFlow>().cooldown;
+    for (metres, step) in [
+        (0.0, 0),
+        (1499.0, 0),
+        (1500.0, 1),
+        (2999.0, 1),
+        (3000.0, 2),
+        (4500.0, 3),
+        (6000.0, 4),
+        (7500.0, 5),
+        (9000.0, 6),
+        (150_000.0, 6),
+    ] {
+        for boost in [false, true] {
+            let mut sim = Sim::new();
+            sim.0.world_mut().resource_mut::<Run>().distance = metres * 10.0;
+            sim.controls().boost = boost;
+            sim.steps(1);
+            let base_speed = if boost { 540.0 } else { 300.0 };
+            let expected = base_speed * (1.0 + 0.05 * step as f32);
+            assert!((sim.run().speed - expected).abs() < 0.001);
+            let world = sim.0.world_mut();
+            assert_eq!(world.query::<&Traffic>().iter(world).count(), 1);
+            let expected_interval = base_interval / (1.0 + 0.15 * step as f32);
+            assert!((world.resource::<TrafficFlow>().cooldown - expected_interval).abs() < 0.001);
         }
-        panic!("the player never landed");
     }
 }
 
-const FLOOR_TOP: f32 = 2.0 * TILE;
-
 #[test]
-fn player_starts_resting_on_the_floor() {
-    let mut sim = Sim::new(FLAT);
-    sim.seconds(0.5);
-    assert!(sim.grounded());
-    assert_eq!(sim.feet().y, FLOOR_TOP);
-}
-
-#[test]
-fn running_reaches_and_keeps_run_speed() {
-    let mut sim = Sim::new(FLAT);
-    let start = sim.feet().x;
-    sim.controls().move_x = 1.0;
-    sim.seconds(1.0);
-    let speed = sim.player::<Velocity>().0.x;
-    assert!(
-        (speed - sim.tuning().run_speed).abs() < 1e-3,
-        "speed {speed}"
-    );
-    assert!(sim.feet().x - start > 0.8 * sim.tuning().run_speed);
-
-    sim.controls().move_x = 0.0;
-    sim.seconds(0.5);
-    assert_eq!(
-        sim.player::<Velocity>().0.x,
-        0.0,
-        "releasing stops the player"
-    );
-}
-
-#[test]
-fn held_jump_clears_three_tiles_and_a_tap_hops_lower() {
-    let mut sim = Sim::new(FLAT);
-    sim.press_jump();
-    let full = sim.apex_until_landing() - FLOOR_TOP;
-    assert!((3.0 * TILE..4.0 * TILE).contains(&full), "full jump {full}");
-
-    sim.controls().jump_pressed = true;
+fn crossing_a_distance_threshold_accelerates_on_the_next_tick() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.0.world_mut().resource_mut::<Run>().distance = 14_999.0;
     sim.steps(1);
-    sim.controls().jump_held = false;
-    let hop = sim.apex_until_landing() - FLOOR_TOP;
-    assert!(hop < 0.5 * full, "tap {hop} vs held {full}");
-}
-
-/// The starter level's widest gap is four tiles; a running jump must clear it.
-#[test]
-fn running_jump_clears_a_four_tile_gap() {
-    let mut sim = Sim::new(&[
-        "........................",
-        "........................",
-        "........................",
-        "........................",
-        ".P....................G.",
-        "##########....##########",
-    ]);
-    sim.controls().move_x = 1.0;
-    let edge = 10.0 * TILE;
-    // Jump from the last moment the body still overlaps the ledge.
-    while sim.feet().x + 0.5 * sim.tuning().size.x + 4.0 < edge {
-        sim.steps(1);
-    }
-    sim.press_jump();
-    sim.seconds(1.0);
-    assert_eq!(sim.feet().y, TILE, "landed beyond the gap");
-    assert_eq!(sim.run().falls, 0);
-}
-
-#[test]
-fn no_jumping_again_in_midair() {
-    let mut sim = Sim::new(FLAT);
-    sim.press_jump();
-    sim.seconds(0.4);
-    assert!(!sim.grounded());
-    let before = sim.player::<Velocity>().0.y;
-    sim.press_jump();
+    assert_eq!(sim.run().speed, 300.0);
+    assert!(sim.run().distance >= 15_000.0);
     sim.steps(1);
-    assert!(sim.player::<Velocity>().0.y < before);
+    assert!((sim.run().speed - 315.0).abs() < 0.001);
 }
 
 #[test]
-fn an_early_jump_press_fires_on_landing() {
-    let mut sim = Sim::new(FLAT);
-    sim.press_jump();
-    // Fall until a few steps above the floor, then press while still airborne.
-    while !(sim.player::<Velocity>().0.y < 0.0 && sim.feet().y < FLOOR_TOP + 20.0) {
-        sim.steps(1);
-    }
-    assert!(!sim.grounded());
-    sim.press_jump();
-    sim.seconds(0.2);
-    assert!(
-        sim.feet().y > FLOOR_TOP + TILE,
-        "the buffered press launched a new jump"
-    );
+fn collision_removes_one_heart_and_protection_prevents_multiple_hits() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.car(PLAYER_START, 300.0);
+    sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert_eq!(sim.run().lives, 2);
+    sim.steps(60);
+    assert_eq!(sim.run().lives, 2);
+    sim.steps(40);
+    assert_eq!(sim.run().lives, 1);
+    // Both cars are now marked as hit, so lingering overlap cannot hit again.
+    sim.steps(200);
+    assert_eq!(sim.run().lives, 1);
 }
 
 #[test]
-fn walls_stop_the_player() {
-    let mut sim = Sim::new(&["........", "........", "....#...", ".P..#..G", "########"]);
-    sim.controls().move_x = 1.0;
-    sim.seconds(1.0);
-    let half_width = 0.5 * sim.tuning().size.x;
-    assert_eq!(sim.feet().x, 4.0 * TILE - half_width);
-    assert!(sim.grounded());
+fn high_speed_oncoming_car_cannot_tunnel_through_player() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.car(PLAYER_START + Vec2::Y * 180.0, -30000.0);
+    sim.steps(1);
+    assert_eq!(sim.run().lives, 2);
 }
 
 #[test]
-fn coins_are_collected_once() {
-    let mut sim = Sim::new(&[".....", ".Po.G", "#####"]);
-    assert_eq!(sim.run().total_coins, 1);
-    sim.controls().move_x = 1.0;
-    sim.seconds(0.4);
-    sim.controls().move_x = 0.0;
-    assert_eq!(sim.run().coins, 1);
-    assert_eq!(sim.coins_left(), 0);
+fn swept_collision_accounts_for_both_axes_and_near_misses() {
+    assert!(swept_hit(
+        Vec2::new(-100.0, 150.0),
+        Vec2::new(100.0, -150.0),
+        CAR_SIZE
+    ));
+    assert!(!swept_hit(
+        Vec2::new(100.0, 150.0),
+        Vec2::new(100.0, -150.0),
+        CAR_SIZE
+    ));
+    assert!(!swept_hit(
+        Vec2::new(-100.0, 250.0),
+        Vec2::new(100.0, 50.0),
+        CAR_SIZE
+    ));
 }
 
 #[test]
-fn touching_the_goal_finishes_and_stops_the_clock() {
-    let mut sim = Sim::new(&[".....", ".P..G", "#####"]);
-    sim.controls().move_x = 1.0;
-    sim.seconds(1.0);
-    let run = sim.run();
-    assert!(run.finished);
-    sim.seconds(0.5);
-    assert_eq!(sim.run().elapsed, run.elapsed);
-}
-
-#[test]
-fn falling_out_returns_to_the_start() {
-    let mut sim = Sim::new(&["......", ".P...G", "##....", "##...."]);
-    let start = sim.feet();
-    sim.controls().move_x = 1.0;
-    sim.seconds(0.5);
-    sim.controls().move_x = 0.0;
-    sim.seconds(2.0);
-    assert_eq!(sim.run().falls, 1);
-    assert_eq!(sim.feet(), start);
-}
-
-#[test]
-fn restart_resets_the_player_coins_and_clock() {
-    let mut sim = Sim::new(&[".....", ".Po.G", "#####"]);
-    let start = sim.feet();
-    sim.controls().move_x = 1.0;
-    sim.seconds(0.4);
-    sim.controls().move_x = 0.0;
-    assert_eq!(sim.run().coins, 1);
-
+fn game_over_freezes_simulation_and_restart_restores_everything() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.0.world_mut().resource_mut::<Run>().lives = 1;
+    sim.0.world_mut().resource_mut::<Run>().distance = 90_000.0;
+    let car = sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert!(sim.run().finished);
+    let distance = sim.run().distance;
+    let player = sim.position();
+    let traffic = sim.0.world().get::<Position>(car).unwrap().0;
+    sim.controls().move_x = -1.0;
+    sim.controls().boost = true;
+    sim.steps(128);
+    assert_eq!(sim.position(), player);
+    assert_eq!(sim.run().distance, distance);
+    assert_eq!(sim.0.world().get::<Position>(car).unwrap().0, traffic);
     sim.controls().restart = true;
-    sim.steps(2);
-    let run = sim.run();
-    assert_eq!((run.coins, run.falls, run.finished), (0, 0, false));
-    assert!(run.elapsed < 2.5 * STEP);
-    assert_eq!(sim.coins_left(), 1);
-    assert_eq!(sim.feet(), start);
+    sim.steps(1);
+    assert_eq!(sim.position(), PLAYER_START);
+    assert_eq!(sim.run().distance, 0.0);
+    assert_eq!(sim.run().previous_distance, 0.0);
+    assert_eq!(sim.run().lives, 3);
+    assert_eq!(sim.run().energy, 1.0);
+    assert_eq!(sim.run().protection, 0.0);
+    assert!(!sim.run().finished);
+    assert!(!sim.controls().restart);
+    let world = sim.0.world_mut();
+    assert_eq!(world.query::<&Traffic>().iter(world).count(), 0);
+    assert_eq!(world.resource::<TrafficFlow>().cooldown, 0.0);
+    sim.steps(1);
+    assert!(sim.run().distance > 0.0);
+    assert_eq!(sim.run().speed, 300.0);
+    let world = sim.0.world_mut();
+    assert_eq!(world.query::<&Traffic>().iter(world).count(), 1);
+}
+
+#[test]
+fn traffic_directions_have_correct_relative_speed_and_cleanup() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    let same = sim.car(Vec2::new(-140.0, 300.0), 140.0);
+    let opposite = sim.car(Vec2::new(0.0, 300.0), -150.0);
+    sim.steps(64);
+    assert!((sim.0.world().get::<Position>(same).unwrap().0.y - 140.0).abs() < 0.01);
+    assert!((sim.0.world().get::<Position>(opposite).unwrap().0.y + 150.0).abs() < 0.01);
+    sim.steps(300);
+    assert!(sim.0.world().get_entity(same).is_err());
+    assert!(sim.0.world().get_entity(opposite).is_err());
+}
+
+#[test]
+fn spawn_safety_detects_oncoming_cars_closing_a_future_gap() {
+    let cars = [
+        (Vec2::new(LANES[0], 480.0), -150.0),
+        (Vec2::new(LANES[1], 0.0), 140.0),
+        (Vec2::new(LANES[2], -20.0), 140.0),
+    ];
+    // Clear now, but the oncoming car would catch the other two before they exit.
+    assert!(blocks_all_lanes(cars, 300.0));
+    let mut cleared_first = cars;
+    cleared_first[2].0.y = -450.0;
+    assert!(!blocks_all_lanes(cleared_first, 300.0));
+}
+
+#[test]
+fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
+    for difficulty in 0..=6 {
+        for seed in [1, 7, 42] {
+            let mut sim = Sim::new();
+            sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
+            sim.0.world_mut().resource_mut::<Run>().distance = difficulty as f64 * 15_000.0;
+            // Observe traffic independently of a stationary player's damage.
+            sim.0.world_mut().resource_mut::<Run>().protection = 1000.0;
+            let mut previous = Vec::new();
+            let mut overlapping_spawns = 0;
+            let mut used_lanes = [false; 3];
+            let mut directions = [false; 2];
+            for tick in 0..3840 {
+                // Include releases and recharges, not just constant cruising.
+                sim.controls().boost = (tick / 160) % 2 == 0;
+                sim.steps(1);
+                let world = sim.0.world_mut();
+                let cars: Vec<_> = world
+                    .query::<(Entity, &Position, &Traffic)>()
+                    .iter(world)
+                    .map(|(id, p, car)| (id, p.0, car.speed))
+                    .collect();
+                let added: Vec<_> = cars
+                    .iter()
+                    .filter(|(id, _, _)| !previous.contains(id))
+                    .collect();
+                assert!(added.len() <= 1, "traffic must spawn individually");
+                if !added.is_empty() && cars.iter().any(|(id, _, _)| previous.contains(id)) {
+                    overlapping_spawns += 1;
+                }
+                for (_, p, speed) in &added {
+                    used_lanes[LANES.iter().position(|x| *x == p.x).unwrap()] = true;
+                    directions[usize::from(*speed > 0.0)] = true;
+                }
+                for (i, (_, a, speed_a)) in cars.iter().enumerate() {
+                    for (j, (_, b, speed_b)) in cars.iter().enumerate().skip(i + 1) {
+                        if a.x == b.x {
+                            assert_eq!(speed_a, speed_b);
+                            assert!((a.y - b.y).abs() >= TRAFFIC_SPACING - 0.01);
+                        }
+                        for (_, c, _) in cars.iter().skip(j + 1) {
+                            if a.x != b.x && b.x != c.x && a.x != c.x {
+                                let spread = a.y.max(b.y).max(c.y) - a.y.min(b.y).min(c.y);
+                                assert!(
+                                    spread > ESCAPE_SPACING - 0.01,
+                                    "wall at difficulty {difficulty}, seed {seed}, tick {tick}"
+                                );
+                            }
+                        }
+                    }
+                }
+                previous = cars.iter().map(|(id, _, _)| *id).collect();
+            }
+            assert!(overlapping_spawns > 10);
+            assert!(used_lanes.into_iter().all(|used| used));
+            assert!(directions.into_iter().all(|used| used));
+        }
+    }
+}
+
+#[test]
+fn random_layouts_are_reproducible_with_a_seed_and_vary_between_seeds() {
+    let trace = |seed| {
+        let mut sim = Sim::new();
+        sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
+        sim.0.world_mut().resource_mut::<Run>().protection = 1000.0;
+        let mut seen = Vec::new();
+        let mut spawns = Vec::new();
+        for tick in 0..1280 {
+            sim.steps(1);
+            let world = sim.0.world_mut();
+            for (id, at, car) in world.query::<(Entity, &Position, &Traffic)>().iter(world) {
+                if !seen.contains(&id) {
+                    seen.push(id);
+                    spawns.push((tick, at.0.x, car.speed));
+                }
+            }
+        }
+        spawns
+    };
+    let first = trace(1);
+    assert_eq!(first, trace(1));
+    assert_ne!(first, trace(2));
+    let intervals: std::collections::HashSet<_> =
+        first.windows(2).map(|pair| pair[1].0 - pair[0].0).collect();
+    assert!(intervals.len() > 3, "spawn intervals should vary");
 }

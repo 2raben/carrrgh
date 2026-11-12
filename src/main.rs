@@ -1,4 +1,4 @@
-//! A small 2D platformer starter: run, jump, collect coins, and reach the flag.
+//! Car Drive: steer through traffic, manage boost, and drive as far as possible.
 
 mod camera;
 mod hud;
@@ -18,8 +18,8 @@ fn main() -> AppExit {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Bevy Template".into(),
-                resolution: (960, 540).into(),
+                title: "Car Drive".into(),
+                resolution: (960, 800).into(),
                 ..default()
             }),
             ..default()
