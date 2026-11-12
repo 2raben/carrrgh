@@ -1,7 +1,9 @@
 //! Deterministic checks through the actual fixed-step simulation.
+use crate::difficulty::{Difficulty, RAMP_START};
 use crate::level::{
-    CAR_SIZE, LANES, LaneChange, PLAYER_START, ROAD_HALF_WIDTH, SIGNAL_SECONDS, TRAFFIC_SPACING,
-    TRUCK_SIZE, Traffic, TrafficFlow, VehicleKind, blocks_all_lanes,
+    CAR_SIZE, EVASION_SIGNAL_SECONDS, LANES, LaneChange, ONCOMING_SPEED, PLAYER_START,
+    ROAD_HALF_WIDTH, SAME_DIRECTION_SPEED, SIGNAL_SECONDS, TRAFFIC_SPACING, TRUCK_SIZE, Traffic,
+    TrafficFlow, VehicleKind, blocks_all_lanes, traffic_is_safe,
 };
 use crate::pickups::{PICKUP_CLEARANCE, PICKUP_PASSED_Y, Pickup, PickupFlow, keeps_clear};
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
@@ -34,6 +36,7 @@ impl Sim {
             .insert_resource(TrafficFlow {
                 cooldown: 0.0,
                 rng: fastrand::Rng::with_seed(7),
+                ..default()
             })
             .insert_resource(PickupFlow::with_seed(3));
         app.finish();
@@ -182,6 +185,8 @@ fn every_1000_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
     let mut baseline = Sim::new();
     baseline.steps(1);
     let base_interval = baseline.0.world().resource::<TrafficFlow>().cooldown;
+    // The same random draw, mapped onto each level's delay range.
+    let fraction = (base_interval - 1.2) / 0.8;
     for (metres, step) in [
         (0.0, 0),
         (999.0, 0),
@@ -196,7 +201,8 @@ fn every_1000_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
         (7000.0, 7),
         (8000.0, 8),
         (9000.0, 9),
-        (150_000.0, 9),
+        (10_000.0, 10),
+        (150_000.0, 150),
     ] {
         for boost in [false, true] {
             let mut sim = Sim::new();
@@ -204,12 +210,21 @@ fn every_1000_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
             sim.controls().boost = boost;
             sim.steps(1);
             let base_speed = if boost { 540.0 } else { 300.0 };
-            let expected = base_speed * (1.0 + 0.05 * step as f32);
+            // Speed stops rising at level 10; traffic keeps getting denser.
+            let expected = base_speed * (1.0 + 0.05 * step.min(9) as f32);
             assert!((sim.run().speed - expected).abs() < 0.001);
+            assert_eq!(sim.run().level(), step + 1);
             let world = sim.0.world_mut();
             assert_eq!(world.query::<&Traffic>().iter(world).count(), 1);
-            let expected_interval = base_interval / (1.0 + 0.15 * step as f32);
-            assert!((world.resource::<TrafficFlow>().cooldown - expected_interval).abs() < 0.001);
+            let interval = world.resource::<TrafficFlow>().cooldown;
+            if step <= 9 {
+                let expected_interval = base_interval / (1.0 + 0.15 * step as f32);
+                assert!((interval - expected_interval).abs() < 0.001);
+            } else {
+                let expected = Difficulty::at(step + 1).spawn_delay(fraction);
+                assert!((interval - expected).abs() < 0.001);
+                assert!(interval < base_interval / 2.35 && interval >= 0.25);
+            }
         }
     }
 }
@@ -294,6 +309,7 @@ fn lane_changes_signal_before_moving_and_finish_at_the_target_offset() {
                     start_x: start,
                     target_x,
                     elapsed: 0.0,
+                    evasive: false,
                 });
             }
             let side = (target_x - start).signum();
@@ -383,6 +399,7 @@ fn changing_lanes_hits_a_player_waiting_on_the_lane_marking() {
         start_x: 0.0,
         target_x: 140.0,
         elapsed: 0.0,
+        evasive: false,
     });
     sim.steps(51);
     assert_eq!(sim.run().lives, 3, "no movement during the warning");
@@ -534,12 +551,272 @@ fn spawn_safety_detects_oncoming_cars_closing_a_future_gap() {
 }
 
 #[test]
+fn difficulty_never_eases_and_ramps_towards_fixed_limits() {
+    let mut previous = Difficulty::at(1);
+    assert_eq!(previous, Difficulty::at(0), "level 0 is treated as level 1");
+    for level in 2..=400 {
+        let next = Difficulty::at(level);
+        assert!(next.speed_multiplier >= previous.speed_multiplier);
+        assert!(next.spawn_delay.start <= previous.spawn_delay.start);
+        assert!(next.spawn_delay.end <= previous.spawn_delay.end);
+        assert!(next.truck_chance >= previous.truck_chance);
+        assert!(next.mix_chance >= previous.mix_chance);
+        assert!(next.evasions >= previous.evasions);
+        assert!(next.change_cooldown <= previous.change_cooldown);
+        assert!(next.change_retry.start <= previous.change_retry.start);
+        assert!(next.change_retry.end <= previous.change_retry.end);
+        assert!(next.simultaneous_changes >= previous.simultaneous_changes);
+        // Each level beyond the stepped phase is strictly denser for a long time.
+        if level > RAMP_START && level <= 60 {
+            assert!(next.spawn_delay.end < previous.spawn_delay.end);
+            assert!(next.mix_chance > previous.mix_chance);
+        }
+        assert!(next.speed_multiplier <= 1.45 + 1e-6);
+        assert!(next.spawn_delay.start >= 0.25 && next.spawn_delay.end >= 0.40);
+        assert!(next.truck_chance <= 0.5 && next.mix_chance <= 0.8);
+        assert!(next.change_cooldown >= 1.0);
+        assert!(next.change_retry.start >= 0.2 && next.change_retry.end >= 0.6);
+        assert!(next.simultaneous_changes <= 2);
+        previous = next;
+    }
+    for level in 1..=RAMP_START {
+        let d = Difficulty::at(level);
+        let step = (level - 1) as f32;
+        assert!((d.speed_multiplier - (1.0 + 0.05 * step)).abs() < 1e-6);
+        assert!((d.spawn_delay.end - 2.0 / (1.0 + 0.15 * step)).abs() < 1e-6);
+        let trucks = [0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.35, 0.35, 0.35];
+        assert_eq!(d.truck_chance, trucks[level as usize - 1]);
+        assert_eq!(d.mix_chance == 0.0, level < 3);
+        assert_eq!(d.evasions, level >= 6);
+        assert_eq!((d.change_cooldown, d.simultaneous_changes), (2.0, 1));
+    }
+    assert!((Difficulty::at(10).mix_chance - 0.5).abs() < 1e-6);
+    assert_eq!(Difficulty::at(11).simultaneous_changes, 2);
+    let run = Run {
+        distance: 1e30,
+        ..default()
+    };
+    assert_eq!(
+        run.level(),
+        u32::MAX,
+        "huge distances saturate instead of overflowing"
+    );
+}
+
+#[test]
+fn head_on_lane_sharing_requires_a_reserved_evasion() {
+    let tuning = PlayerTuning::default();
+    let mixed = Difficulty::at(6);
+    // Before level 3, lanes keep a single direction.
+    let separate = Difficulty::at(2);
+    let diverging = (
+        Traffic::new(1, SAME_DIRECTION_SPEED, VehicleKind::Car),
+        Vec2::new(LANES[1], 480.0),
+    );
+    let below = Vec2::new(LANES[1], -100.0);
+    let oncoming_below = Traffic::new(1, ONCOMING_SPEED, VehicleKind::Car);
+    assert!(!traffic_is_safe(
+        (oncoming_below, below),
+        &[diverging],
+        &tuning,
+        &separate
+    ));
+    let same = |y| {
+        (
+            Traffic::new(1, SAME_DIRECTION_SPEED, VehicleKind::Car),
+            Vec2::new(LANES[1], y),
+        )
+    };
+    let oncoming = Traffic::new(1, ONCOMING_SPEED, VehicleKind::Car);
+    let at = Vec2::new(LANES[1], 480.0);
+    let evading = |target: usize| Traffic {
+        change: Some(LaneChange {
+            target_lane: target,
+            start_x: at.x,
+            target_x: LANES[target],
+            elapsed: 0.0,
+            evasive: true,
+        }),
+        ..oncoming
+    };
+    // Closing in on screen without an evasion is never admitted.
+    assert!(!traffic_is_safe(
+        (oncoming, at),
+        &[same(-100.0)],
+        &tuning,
+        &mixed
+    ));
+    // An evasion that finishes before the gap reaches 180 units is admitted.
+    assert!(traffic_is_safe(
+        (evading(0), at),
+        &[same(-100.0)],
+        &tuning,
+        &mixed
+    ));
+    assert!(traffic_is_safe(
+        (evading(2), at),
+        &[same(-100.0)],
+        &tuning,
+        &mixed
+    ));
+    // Too close for the 1.1-second evasion.
+    assert!(!traffic_is_safe(
+        (evading(0), at),
+        &[same(100.0)],
+        &tuning,
+        &mixed
+    ));
+    // A slower truck evasion needs a longer gap.
+    let truck = Traffic {
+        kind: VehicleKind::Truck,
+        ..evading(0)
+    };
+    assert!(traffic_is_safe(
+        (evading(0), at),
+        &[same(-50.0)],
+        &tuning,
+        &mixed
+    ));
+    assert!(!traffic_is_safe(
+        (truck, at),
+        &[same(-50.0)],
+        &tuning,
+        &mixed
+    ));
+    // No evasion chains: never evade into the lane of the vehicle given way to.
+    let mut changing = same(-100.0);
+    changing.0.change = Some(LaneChange {
+        target_lane: 0,
+        start_x: LANES[1],
+        target_x: LANES[0],
+        elapsed: 0.0,
+        evasive: false,
+    });
+    assert!(!traffic_is_safe(
+        (evading(0), at),
+        &[changing],
+        &tuning,
+        &mixed
+    ));
+    // Nor head-on into same-direction traffic in the evasion's target lane.
+    let other_lane = (
+        Traffic::new(0, SAME_DIRECTION_SPEED, VehicleKind::Car),
+        Vec2::new(LANES[0], -50.0),
+    );
+    assert!(!traffic_is_safe(
+        (evading(0), at),
+        &[other_lane],
+        &tuning,
+        &mixed
+    ));
+    // Meetings after the same-direction vehicle has left the road do not count.
+    assert!(traffic_is_safe(
+        (oncoming, at),
+        &[same(-300.0)],
+        &tuning,
+        &mixed
+    ));
+    // Diverging traffic shares a lane once the usual spacing is kept.
+    let behind = Vec2::new(LANES[1], -100.0);
+    let ahead = (
+        Traffic::new(1, SAME_DIRECTION_SPEED, VehicleKind::Car),
+        Vec2::new(LANES[1], 480.0),
+    );
+    assert!(traffic_is_safe(
+        (oncoming, behind),
+        &[ahead],
+        &tuning,
+        &mixed
+    ));
+    assert!(!traffic_is_safe(
+        (oncoming, Vec2::new(LANES[1], 400.0)),
+        &[ahead],
+        &tuning,
+        &mixed
+    ));
+}
+
+#[test]
+fn evasions_signal_briefly_and_release_the_lane_before_the_gap_closes() {
+    for kind in [VehicleKind::Car, VehicleKind::Truck] {
+        let mut sim = Sim::new();
+        sim.quiet();
+        sim.0.world_mut().resource_mut::<Run>().protection = 1000.0;
+        let same = sim.car(Vec2::new(LANES[1], -120.0), SAME_DIRECTION_SPEED);
+        let oncoming = sim.car(Vec2::new(LANES[1], 480.0), ONCOMING_SPEED);
+        {
+            let mut car = sim.0.world_mut().get_mut::<Traffic>(oncoming).unwrap();
+            car.kind = kind;
+            car.change = Some(LaneChange {
+                target_lane: 2,
+                start_x: LANES[1],
+                target_x: LANES[2],
+                elapsed: 0.0,
+                evasive: true,
+            });
+        }
+        let mut signalled = false;
+        let mut closest_shared = f32::INFINITY;
+        for tick in 1..=128 {
+            sim.steps(1);
+            let world = sim.0.world();
+            let car = world.get::<Traffic>(oncoming).unwrap();
+            let x = world.get::<Position>(oncoming).unwrap().0.x;
+            let gap = world.get::<Position>(oncoming).unwrap().0.y
+                - world.get::<Position>(same).unwrap().0.y;
+            if (tick as f32) < EVASION_SIGNAL_SECONDS * 64.0 {
+                assert_eq!(x, LANES[1], "no movement during the warning");
+                signalled |= car.signal_side() == Some(1.0);
+            }
+            if car.occupies(1) {
+                closest_shared = closest_shared.min(gap);
+            }
+        }
+        let car = sim.0.world().get::<Traffic>(oncoming).unwrap();
+        assert!(signalled);
+        assert_eq!((car.lane, car.change.is_none()), (2, true));
+        assert!(
+            closest_shared >= TRAFFIC_SPACING,
+            "{kind:?}: {closest_shared}"
+        );
+    }
+}
+
+#[test]
+fn from_level_11_two_voluntary_lane_changes_may_run_at_once() {
+    for (level, expected) in [(10, 1), (11, 2)] {
+        let mut sim = Sim::new();
+        sim.quiet();
+        sim.run_mut().distance = f64::from(level - 1) * 10_000.0;
+        for at in [Vec2::new(LANES[0], 170.0), Vec2::new(LANES[2], 355.0)] {
+            let id = sim.car(at, SAME_DIRECTION_SPEED);
+            sim.0
+                .world_mut()
+                .get_mut::<Traffic>(id)
+                .unwrap()
+                .change_cooldown = 0.0;
+        }
+        sim.steps(2);
+        let world = sim.0.world_mut();
+        let changing = world
+            .query::<&Traffic>()
+            .iter(world)
+            .filter(|car| car.change.is_some())
+            .count();
+        assert_eq!(changing, expected, "level {level}");
+    }
+}
+
+#[test]
 fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
-    for difficulty in 0..=9 {
+    // Head-on evasions need a narrow on-screen gap, so they are counted overall.
+    let mut evasions = 0;
+    for level in (1..=10).chain([15, 20, 30, 50]) {
+        let mut mixed_lanes = 0;
         for seed in [1, 7, 42] {
             let mut sim = Sim::new();
             sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
-            sim.0.world_mut().resource_mut::<Run>().distance = difficulty as f64 * 10_000.0;
+            sim.0.world_mut().resource_mut::<Run>().distance = f64::from(level - 1) * 10_000.0;
             // Observe traffic independently of a stationary player's damage.
             sim.0.world_mut().resource_mut::<Run>().protection = 1000.0;
             let mut previous = Vec::new();
@@ -550,6 +827,8 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
                 // Include releases and recharges, not just constant cruising.
                 sim.controls().boost = (tick / 160) % 2 == 0;
                 sim.steps(1);
+                // Driving raises the level during the run.
+                let current = Difficulty::at(sim.run().level());
                 let world = sim.0.world_mut();
                 let cars: Vec<_> = world
                     .query::<(Entity, &Position, &Traffic)>()
@@ -567,12 +846,23 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
                 for (_, _, car) in &added {
                     used_lanes[car.lane] = true;
                     directions[usize::from(car.speed > 0.0)] = true;
+                    if car.change.is_some_and(|change| change.evasive) {
+                        assert!(current.evasions && car.speed < 0.0);
+                        evasions += 1;
+                    }
                 }
                 for (i, (_, a, car_a)) in cars.iter().enumerate() {
                     for (j, (_, b, car_b)) in cars.iter().enumerate().skip(i + 1) {
                         if (0..3).any(|lane| car_a.occupies(lane) && car_b.occupies(lane)) {
-                            assert_eq!(car_a.speed, car_b.speed);
-                            assert!((a.y - b.y).abs() >= TRAFFIC_SPACING - 0.01);
+                            // Head-on pairs never close in: evasions release the lane first.
+                            assert!(
+                                (a.y - b.y).abs() >= TRAFFIC_SPACING - 0.01,
+                                "lane spacing at level {level}, seed {seed}, tick {tick}"
+                            );
+                            if car_a.speed != car_b.speed {
+                                assert!(current.mix_chance > 0.0, "mixed before level 3");
+                                mixed_lanes += 1;
+                            }
                         }
                         let half_size = (car_a.kind.size() + car_b.kind.size()) * 0.5;
                         assert!(!(*a - *b).abs().cmple(half_size).all(), "traffic overlap");
@@ -582,7 +872,7 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
                                     [(*car_a, *a), (*car_b, *b), (*car_c, *c)],
                                     300.0
                                 ),
-                                "wall at difficulty {difficulty}, seed {seed}, tick {tick}"
+                                "wall at level {level}, seed {seed}, tick {tick}"
                             );
                         }
                     }
@@ -591,8 +881,39 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
             }
             assert!(overlapping_spawns > 10);
             assert!(used_lanes.into_iter().all(|used| used));
-            assert!(directions.into_iter().all(|used| used));
+            assert!(
+                directions.into_iter().all(|used| used),
+                "directions {directions:?} at level {level}, seed {seed}"
+            );
         }
+        if level >= 3 {
+            assert!(mixed_lanes > 0, "mixed lanes from level {level}");
+        }
+    }
+    assert!(evasions > 0);
+}
+
+#[test]
+fn oncoming_spawns_evade_same_direction_traffic_only_from_level_6() {
+    for (level, expect) in [(5, false), (6, true), (30, true)] {
+        let mut evasions = 0;
+        for seed in 0..100 {
+            let mut sim = Sim::new();
+            sim.run_mut().distance = f64::from(level - 1) * 10_000.0;
+            sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
+            sim.0.world_mut().resource_mut::<PickupFlow>().remaining = f32::INFINITY;
+            sim.car(Vec2::new(LANES[1], -100.0), SAME_DIRECTION_SPEED);
+            sim.steps(1);
+            let world = sim.0.world_mut();
+            for car in world.query::<&Traffic>().iter(world) {
+                if let Some(change) = car.change.filter(|change| change.evasive) {
+                    assert_eq!((car.lane, car.speed), (1, ONCOMING_SPEED));
+                    assert_ne!(change.target_lane, 1);
+                    evasions += 1;
+                }
+            }
+        }
+        assert_eq!(evasions > 0, expect, "level {level}: {evasions}");
     }
 }
 

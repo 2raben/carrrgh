@@ -3,6 +3,7 @@ tags: [adr]
 status: accepted
 date: 2026-11-12
 amends: [0005-spawn-continuous-random-traffic.md]
+amended-by: [0010-mix-lane-directions-with-reserved-evasions.md]
 sources:
   - src/level.rs
   - src/pickups.rs
@@ -12,6 +13,11 @@ sources:
 ---
 
 # 0006 — Reserve lanes for signalled traffic manoeuvres
+
+> Amended by [ADR 0010](0010-mix-lane-directions-with-reserved-evasions.md): levels
+> are no longer capped at ten, lanes may mix directions from level 3, oncoming
+> traffic may hold reserved evasions from level 6, and two voluntary changes may
+> run at once from level 11. The reservation rationale below still holds.
 
 ## Context
 

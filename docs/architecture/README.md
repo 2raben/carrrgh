@@ -23,7 +23,8 @@ Only input reads devices; only presentation writes `Transform`.
 | Module | Responsibility |
 | --- | --- |
 | [simulation.rs](../../src/simulation.rs) | Resources, player startup, fixed-step ordering |
-| [level.rs](../../src/level.rs) | Road bounds, lane centres, traffic components, vehicle kinds, lane reservations, random spawning, signalled lane changes, movement and cleanup |
+| [difficulty.rs](../../src/difficulty.rs) | Pure mapping from the endless level to speed and traffic tuning |
+| [level.rs](../../src/level.rs) | Road bounds, lane centres, traffic components, vehicle kinds, lane reservations, mixed lanes, random spawning, signalled lane changes and evasions, movement and cleanup |
 | [pickups.rs](../../src/pickups.rs) | Heart and shield pickups: rare random spawning, lane clearance, movement and collection |
 | [player.rs](../../src/player.rs) | `Controls`, car-centred `Position`/`PreviousPosition`, movement tuning, lateral steering |
 | [run.rs](../../src/run.rs) | Distance, coins, energy, protection, held shield, swept collision, game over, restart and the `RunEnded` message |
@@ -89,13 +90,23 @@ headlights and opposite orientation distinguish direction as well as colour.
 Ten world units count as one displayed metre. Distance uses `f64` to keep long
 runs and scrolling stable.
 
-Every 1,000 metres, cruise and boost speed gain 5% of their initial values and
-traffic spawn frequency increases. Ten levels cap progression at 9,000 metres,
-at 435 units/s cruising and 783 boosting. The HUD shows the current level out of ten.
+Levels are endless: level `L = floor(metres / 1000) + 1`, shown in the HUD as
+`LEVEL L`. `Difficulty::at` in `difficulty.rs` maps the level to one profile that
+speed, spawning and lane changes read. Every value is monotonic in the level.
+Levels 1–10 step: cruise and boost gain 5% of their initial values per level up to
+435 and 783 units/s at level 10, and the spawn delay shrinks. From 4,000 metres
+(level 5), each spawn has a 20% chance of a truck, increasing to 35% at 7,000
+metres. Mixed lanes start at level 3 with a 15% mixing chance, plus 5 points per
+level; head-on evasions start at level 6. From level 11, speed stays fixed, and the
+other values move from their level-10 value towards a limit by
+`r(L) = 1 − 0.85^(L − 10)`: spawn delay 0.51–0.85 s → 0.25–0.40 s, trucks
+35% → 50%, mixing 50% → 80%, lane-change cooldown 2.0 → 1.0 s, blocked-change
+retry 0.4–1.2 → 0.2–0.6 s. Two voluntary lane changes may run at once from level 11.
+Signal times, traffic speeds, spacing, wall and pickup checks never scale, so at
+high levels the admission rules rather than the curve limit density.
 Speed changes on the tick after crossing a threshold; existing traffic retains its
 signed speed. Restart resets progression through zero distance and starts a fresh
-random traffic sequence. From 4,000 metres, each spawn attempt has a 20% chance of
-a truck, increasing to 35% at 7,000 metres. No trucks appear before 4,000 metres.
+random traffic sequence. No trucks appear before 4,000 metres.
 Trucks have a cargo bed and cab, the larger collision box, and slower lane changes.
 
 Cars spawn individually at y = 480, even while previous cars remain on the road,
@@ -103,11 +114,12 @@ and leave below y = −470. Each spawn shuffles the candidate lanes. Cars get a 
 lateral offset up to 36 units from the lane centre; trucks up to 25 units, keeping
 their body in the lane. Lane identity is stored explicitly rather than inferred from
 the offset x position. An empty lane randomly receives same-direction or oncoming
-traffic; subsequent cars in any occupied or reserved lane share its speed until it
-clears, keeping at least 180 units between their centres.
-The next random delay is 1.2–2.0 seconds divided by `1 + 0.15 × difficulty_step`.
-Thus later stages create denser traffic without simultaneous batches. If no lane
-is safe, the spawner retries after 0.1 seconds.
+traffic; subsequent cars in an occupied or reserved lane take the direction of its
+nearest (highest) vehicle unless the spawn mixes, keeping at least 180 units between
+the centres of vehicles sharing a lane. The next random delay is drawn from the
+level's range (1.2–2.0 seconds at level 1). Thus later stages create denser
+traffic without simultaneous batches. If no lane is safe, the spawner retries after
+0.1 seconds.
 
 Before admission, each candidate is checked against pairs of existing cars in the
 other lanes. Intersecting their relative-motion intervals detects whether all three
@@ -129,12 +141,39 @@ when the vehicle reaches the new random offset. Position interpolation also cove
 lateral movement, and swept collisions include the crossing trajectory.
 
 Both source and destination lanes are reserved from the first warning until the
-change finishes. Only one change is active at a time. The planner uses the same
-speed, spacing and future-wall checks as spawning, and refuses to close a pickup's
-clearance. Target-lane traffic must have the same signed speed; cars never accelerate
-or reverse to merge. New traffic and pickups respect reservations. Blocked changes
-retry after a random 0.4–1.2 seconds while still in the planning zone. See
+change finishes. One voluntary change is active at a time (two from level 11); the
+planner reserves at most one per tick, checked against every active reservation.
+The planner uses the same lane-sharing, spacing and future-wall checks as spawning,
+and refuses to close a pickup's clearance in either reserved lane. Cars never
+accelerate or reverse to merge. New traffic and pickups respect reservations.
+Blocked changes retry after the level's random retry delay while still in the
+planning zone; a finished change waits the level's cooldown. See
 [ADR 0006](decisions/0006-reserve-lanes-for-signalled-traffic-manoeuvres.md).
+
+Before level 3, vehicles sharing a lane must have the same signed speed. From
+level 3, a spawn rolls the level's mixing chance once when an occupied lane is
+tried. A mix first tries the opposite direction to the lane's nearest vehicle and
+falls back to the lane's direction. Mixed pairs sharing a lane are admitted when:
+
+- they diverge (same-direction vehicle ahead) and are already 180 units apart;
+- they approach head-on, but the lower same-direction vehicle leaves the road
+  (estimated at initial cruise speed) before they come within 180 units; or
+- the oncoming vehicle already holds an **evasion** out of the only shared lane
+  that releases it, plus 0.05 seconds of fixed-step slack, before the gap closes
+  below 180 units. Its target lane must not hold the same-direction vehicle.
+
+Oncoming traffic always gives way. From level 6, an oncoming spawn that is only
+blocked by a head-on pair may be admitted with an evasion into a random adjacent
+lane, reserved from admission. Evasions blink for 0.5 seconds and cross in 0.6
+seconds (0.8 for trucks), with the usual signals, interpolation and swept
+collisions. They do not count towards the voluntary limit, and voluntary changes
+never create head-on pairs that need one. Because head-on traffic closes at 290
+units/s and the gap must fit an evasion, evasions occur only when the
+same-direction vehicle is in a narrow band in front of the player; they are rare
+compared with diverging mixed lanes. From level 3, four spawns in a row in one
+direction force the next spawn to use the other direction, waiting for a lane
+that admits it. Otherwise dense same-direction traffic can lock oncoming traffic
+out. See [ADR 0010](decisions/0010-mix-lane-directions-with-reserved-evasions.md).
 
 ## Boost and damage
 
@@ -185,7 +224,7 @@ outline is white-cyan instead of gold.
 Garage models amend these baseline values: the traffic wall spacing grows for
 larger player dimensions and slower steering, and pickup clearance/lifetime
 grows for a longer player. Minimum cruising speed remains above same-direction
-traffic speed; the fastest tuned model stays below 1,000 units/s at level ten.
+traffic speed; the fastest tuned model stays below 1,000 units/s from level ten on.
 The conservative checks do not prove that every player steering choice can recover.
 
 These choices supersede platformer movement in
@@ -273,11 +312,14 @@ outside automated coverage.
 `mise run check` runs formatting, Clippy, build, and tests in the project Nix shell
 on NixOS. Headless tests cover steering and edges, boost depletion/recharge,
 protection and repeated contact, tunnelling and near misses, relative traffic
-motion and cleanup, game-over freeze, complete restart, difficulty thresholds and
-caps, truck unlock and dimensions, lateral offsets, warning-before-motion and
-completion, safe lane reservations, damage while waiting on lane markings,
-reproducible random layouts, continuous individual spawning, and same-lane spacing and three-lane wall checks across seeds and difficulty levels with boost
-cycling. Pickup tests cover heart and shield effects and limits, shields with
+motion and cleanup, game-over freeze, complete restart, difficulty thresholds,
+the monotonic endless profile and its limits, truck unlock and dimensions, lateral
+offsets, warning-before-motion and completion, safe lane reservations, two
+simultaneous changes from level 11, head-on admission with and without evasions,
+evasion timing and lane release, spawned evasions only from level 6, damage while
+waiting on lane markings, reproducible random layouts, continuous individual
+spawning, and lane-sharing spacing, mixed lanes and three-lane wall checks across
+seeds at levels 1–10, 15, 20, 30 and 50 with boost cycling. Pickup tests cover heart and shield effects and limits, shields with
 protection and the last heart, collection at extreme speed, restart, the clearance
 prediction, rarity, useful kinds only, one pickup at a time, lane clearance with
 real traffic, and seeded reproducibility. Profile tests cover the coin rate,
