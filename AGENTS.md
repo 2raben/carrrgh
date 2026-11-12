@@ -14,9 +14,10 @@ Consult the [architectural decision records (ADRs)](docs/architecture/decisions/
 for significant choices and their rationale.
 
 - `src/main.rs`: application composition and window configuration.
-- `src/simulation.rs`, `level.rs`, `player.rs`, `run.rs`: the headless simulation
-  (plugin and fixed-step ordering, road geometry and random traffic, steering,
-  boost, swept collision, damage, game over, and restart).
+- `src/simulation.rs`, `level.rs`, `pickups.rs`, `player.rs`, `run.rs`: the headless
+  simulation (plugin and fixed-step ordering, road geometry and random traffic,
+  heart and shield pickups, steering, boost, swept collision, damage, game over,
+  and restart).
 - `src/input.rs`, `visuals.rs`, `camera.rs`, `hud.rs`: device input, drawing and
   render interpolation, the camera, and on-screen text.
 - `src/tests.rs`: headless simulation tests of movement and the run rules.

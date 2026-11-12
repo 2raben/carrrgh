@@ -1,4 +1,4 @@
-//! Distance, three hearts, boost gauge, and restart instructions.
+//! Distance, three hearts, held shield, boost gauge, and restart instructions.
 use crate::run::Run;
 use crate::visuals::palette;
 use bevy::prelude::*;
@@ -11,6 +11,8 @@ struct FinishCue;
 struct BoostBar;
 #[derive(Component)]
 struct Heart(u8);
+#[derive(Component)]
+struct ShieldIcon;
 
 pub struct HudPlugin;
 impl Plugin for HudPlugin {
@@ -60,7 +62,7 @@ fn heart(index: u8) -> impl Bundle {
                 },
                 ..default()
             },
-            BackgroundColor(Color::srgb(1.0, 0.4, 0.38)),
+            BackgroundColor(palette::HEART),
         )
     };
     (
@@ -76,6 +78,38 @@ fn heart(index: u8) -> impl Bundle {
             ),
             part(0.6, 3.6, true),
             part(13.4, 3.6, true),
+        ],
+    )
+}
+
+fn shield_icon() -> impl Bundle {
+    let part = |left, top, width, height| {
+        (
+            ShieldIcon,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(left),
+                top: Val::Px(top),
+                width: Val::Px(width),
+                height: Val::Px(height),
+                ..default()
+            },
+            BackgroundColor(palette::DIM),
+        )
+    };
+    (
+        Node {
+            width: Val::Px(32.0),
+            height: Val::Px(32.0),
+            margin: UiRect::left(Val::Px(8.0)),
+            ..default()
+        },
+        children![
+            part(5.0, 3.0, 22.0, 14.0),
+            (
+                part(8.0, 9.0, 16.0, 16.0),
+                UiTransform::from_rotation(Rot2::radians(std::f32::consts::FRAC_PI_4))
+            ),
         ],
     )
 }
@@ -98,7 +132,7 @@ fn spawn_hud(mut commands: Commands) {
                     column_gap: Val::Px(12.0),
                     ..default()
                 },
-                children![heart(0), heart(1), heart(2),]
+                children![heart(0), heart(1), heart(2), shield_icon()]
             ),
             (Progress, text("", 20.0)),
             text("BOOST / SPACE", 15.0),
@@ -120,6 +154,10 @@ fn spawn_hud(mut commands: Commands) {
                 ),]
             ),
             text("Release to recharge.\nBoost adds speed, not armor.", 14.0),
+            text(
+                "Pick up hearts to heal.\nA shield blocks the next hit.",
+                14.0
+            ),
         ],
     ));
     commands.spawn((panel(Node { bottom: Val::Px(20.0), left: Val::Px(20.0), ..default() }), text("A / D or Left / Right   Steer\nSPACE   Boost     R   Restart     ESC   Quit\nController: Stick / D-pad / South / Select", 14.0)));
@@ -142,7 +180,8 @@ fn show_run(
     mut progress: Query<&mut Text, (With<Progress>, Without<FinishCue>)>,
     mut finish: Query<(&mut Text, &mut Visibility), With<FinishCue>>,
     mut bars: Query<&mut Node, With<BoostBar>>,
-    mut hearts: Query<(&Heart, &mut BackgroundColor)>,
+    mut hearts: Query<(&Heart, &mut BackgroundColor), Without<ShieldIcon>>,
+    mut shield: Query<&mut BackgroundColor, With<ShieldIcon>>,
 ) {
     for mut text in &mut progress {
         text.0 = format!("{:06.0} m", run.distance / 10.0);
@@ -152,9 +191,16 @@ fn show_run(
     }
     for (heart, mut color) in &mut hearts {
         color.0 = if heart.0 < run.lives {
-            Color::srgb(1.0, 0.4, 0.38)
+            palette::HEART
         } else {
-            Color::srgb(0.25, 0.29, 0.33)
+            palette::DIM
+        };
+    }
+    for mut color in &mut shield {
+        color.0 = if run.shield {
+            palette::SHIELD
+        } else {
+            palette::DIM
         };
     }
     for (mut text, mut visibility) in &mut finish {

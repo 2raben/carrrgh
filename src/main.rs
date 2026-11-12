@@ -4,6 +4,7 @@ mod camera;
 mod hud;
 mod input;
 mod level;
+mod pickups;
 mod player;
 mod run;
 mod simulation;

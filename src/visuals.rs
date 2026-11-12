@@ -1,5 +1,6 @@
-//! Procedural car sprites, scrolling lane marks, and render interpolation.
+//! Procedural car and pickup sprites, scrolling lane marks, and render interpolation.
 use crate::level::{CAR_SIZE, ROAD_HALF_WIDTH, Traffic};
+use crate::pickups::{PICKUP_SIZE, Pickup};
 use crate::player::{Player, Position, PreviousPosition};
 use crate::run::Run;
 use bevy::prelude::*;
@@ -9,6 +10,10 @@ pub mod palette {
     pub const PANEL: Color = Color::srgba(0.035, 0.055, 0.08, 0.95);
     pub const TEXT: Color = Color::srgb(0.93, 0.95, 0.96);
     pub const BLUE: Color = Color::srgb(0.22, 0.72, 0.95);
+    pub const HEART: Color = Color::srgb(1.0, 0.4, 0.38);
+    pub const SHIELD: Color = Color::srgb(0.55, 0.95, 1.0);
+    pub const PROTECTION: Color = Color::srgb(1.0, 0.82, 0.3);
+    pub const DIM: Color = Color::srgb(0.25, 0.29, 0.33);
 }
 
 #[derive(Component)]
@@ -17,6 +22,7 @@ struct RoadMark(f32);
 enum Effect {
     Protection,
     Exhaust,
+    Shield,
 }
 
 pub struct VisualsPlugin;
@@ -24,7 +30,7 @@ impl Plugin for VisualsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.09, 0.16, 0.14)))
             .add_systems(Startup, draw_road)
-            .add_systems(Update, decorate_cars)
+            .add_systems(Update, (decorate_cars, decorate_pickups))
             .add_systems(
                 PostUpdate,
                 (interpolate_positions, scroll_road, show_effects)
@@ -37,6 +43,15 @@ fn sprite(color: Color, size: Vec2, center: Vec2, z: f32) -> impl Bundle {
     (
         Sprite::from_color(color, size),
         Transform::from_translation(center.extend(z)),
+    )
+}
+
+/// A square turned by 45 degrees, used to build hearts and shields.
+fn diamond(color: Color, side: f32, center: Vec2, z: f32) -> impl Bundle {
+    (
+        Sprite::from_color(color, Vec2::splat(side)),
+        Transform::from_translation(center.extend(z))
+            .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
     )
 }
 
@@ -110,9 +125,19 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
                 ));
                 if player {
                     body.spawn((
+                        Effect::Shield,
+                        sprite(
+                            palette::SHIELD.with_alpha(0.35),
+                            CAR_SIZE + Vec2::splat(30.0),
+                            Vec2::ZERO,
+                            -0.15,
+                        ),
+                        Visibility::Hidden,
+                    ));
+                    body.spawn((
                         Effect::Protection,
                         sprite(
-                            Color::srgb(1.0, 0.82, 0.3),
+                            palette::PROTECTION,
                             CAR_SIZE + Vec2::splat(12.0),
                             Vec2::ZERO,
                             -0.1,
@@ -171,6 +196,49 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
     }
 }
 
+fn decorate_pickups(
+    mut commands: Commands,
+    pickups: Query<(Entity, &Pickup, &Position), Added<Pickup>>,
+) {
+    for (entity, pickup, position) in &pickups {
+        let color = match pickup {
+            Pickup::Heart => palette::HEART,
+            Pickup::Shield => palette::SHIELD,
+        };
+        commands
+            .entity(entity)
+            .insert((
+                Transform::from_translation(position.0.extend(1.0)),
+                Visibility::default(),
+            ))
+            .with_children(|body| {
+                body.spawn(sprite(color, PICKUP_SIZE, Vec2::ZERO, 0.0));
+                body.spawn(sprite(
+                    Color::srgb(0.07, 0.09, 0.12),
+                    PICKUP_SIZE - Vec2::splat(6.0),
+                    Vec2::ZERO,
+                    0.1,
+                ));
+                match pickup {
+                    Pickup::Heart => {
+                        body.spawn(diamond(color, 10.0, Vec2::new(-4.5, 3.5), 0.2));
+                        body.spawn(diamond(color, 10.0, Vec2::new(4.5, 3.5), 0.2));
+                        body.spawn(diamond(color, 13.0, Vec2::new(0.0, -2.0), 0.2));
+                    }
+                    Pickup::Shield => {
+                        body.spawn(sprite(
+                            color,
+                            Vec2::new(18.0, 10.0),
+                            Vec2::new(0.0, 5.0),
+                            0.2,
+                        ));
+                        body.spawn(diamond(color, 12.7, Vec2::new(0.0, -0.5), 0.2));
+                    }
+                }
+            });
+    }
+}
+
 fn interpolate_positions(
     fixed: Res<Time<Fixed>>,
     run: Res<Run>,
@@ -205,12 +273,20 @@ fn scroll_road(
     }
 }
 
-fn show_effects(run: Res<Run>, mut effects: Query<(&Effect, &mut Visibility)>) {
-    for (protection, mut visibility) in &mut effects {
-        let visible = if matches!(protection, Effect::Protection) {
-            run.protection > 0.0 && !run.finished
-        } else {
-            run.boosting
+fn show_effects(run: Res<Run>, mut effects: Query<(&Effect, &mut Visibility, &mut Sprite)>) {
+    for (effect, mut visibility, mut sprite) in &mut effects {
+        let visible = match effect {
+            Effect::Protection => {
+                // A shield-absorbed hit flashes white-blue instead of gold.
+                sprite.color = if run.shield_absorbed {
+                    Color::WHITE.mix(&palette::SHIELD, 0.4)
+                } else {
+                    palette::PROTECTION
+                };
+                run.protection > 0.0 && !run.finished
+            }
+            Effect::Exhaust => run.boosting,
+            Effect::Shield => run.shield && !run.finished,
         };
         *visibility = if visible {
             Visibility::Inherited

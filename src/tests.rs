@@ -3,7 +3,8 @@ use crate::level::{
     CAR_SIZE, ESCAPE_SPACING, LANES, PLAYER_START, ROAD_HALF_WIDTH, TRAFFIC_SPACING, Traffic,
     TrafficFlow, blocks_all_lanes,
 };
-use crate::player::{Controls, Player, Position, PreviousPosition};
+use crate::pickups::{PICKUP_CLEARANCE, PICKUP_PASSED_Y, Pickup, PickupFlow, keeps_clear};
+use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
 use crate::run::{Run, swept_hit};
 use crate::simulation::SimulationPlugin;
 use bevy::{prelude::*, time::TimeUpdateStrategy};
@@ -17,7 +18,8 @@ impl Sim {
             .insert_resource(TrafficFlow {
                 cooldown: 0.0,
                 rng: fastrand::Rng::with_seed(7),
-            });
+            })
+            .insert_resource(PickupFlow::with_seed(3));
         app.finish();
         app.cleanup();
         app.update();
@@ -52,8 +54,21 @@ impl Sim {
             ))
             .id()
     }
+    fn pickup(&mut self, at: Vec2, kind: Pickup) -> Entity {
+        self.0
+            .world_mut()
+            .spawn((kind, Position(at), PreviousPosition(at)))
+            .id()
+    }
+    fn exists(&self, entity: Entity) -> bool {
+        self.0.world().get_entity(entity).is_ok()
+    }
+    fn run_mut(&mut self) -> Mut<'_, Run> {
+        self.0.world_mut().resource_mut::<Run>()
+    }
     fn quiet(&mut self) {
         self.0.world_mut().resource_mut::<TrafficFlow>().cooldown = 10000.0;
+        self.0.world_mut().resource_mut::<PickupFlow>().remaining = f32::INFINITY;
     }
 }
 
@@ -346,4 +361,188 @@ fn random_layouts_are_reproducible_with_a_seed_and_vary_between_seeds() {
     let intervals: std::collections::HashSet<_> =
         first.windows(2).map(|pair| pair[1].0 - pair[0].0).collect();
     assert!(intervals.len() > 3, "spawn intervals should vary");
+}
+
+#[test]
+fn heart_restores_one_life_but_never_more_than_three() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.run_mut().lives = 1;
+    let heart = sim.pickup(PLAYER_START, Pickup::Heart);
+    sim.steps(1);
+    assert_eq!(sim.run().lives, 2);
+    assert!(!sim.exists(heart));
+    sim.run_mut().lives = 3;
+    let unused = sim.pickup(PLAYER_START, Pickup::Heart);
+    sim.steps(1);
+    assert_eq!(sim.run().lives, 3);
+    assert!(
+        sim.exists(unused),
+        "a heart without effect stays on the road"
+    );
+}
+
+#[test]
+fn shield_absorbs_exactly_one_hit_and_still_grants_protection() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    let shield = sim.pickup(PLAYER_START, Pickup::Shield);
+    sim.car(PLAYER_START, 300.0);
+    sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert!(!sim.exists(shield));
+    assert_eq!(sim.run().lives, 3);
+    assert!(!sim.run().shield);
+    assert!(sim.run().shield_absorbed);
+    assert!(sim.run().protection > 0.0);
+    sim.steps(100);
+    assert_eq!(sim.run().lives, 2);
+    assert!(!sim.run().shield_absorbed);
+}
+
+#[test]
+fn shield_also_saves_the_last_heart() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.run_mut().lives = 1;
+    sim.run_mut().shield = true;
+    sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert_eq!(sim.run().lives, 1);
+    assert!(!sim.run().finished);
+}
+
+#[test]
+fn only_one_shield_is_held_and_protection_does_not_consume_it() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.run_mut().shield = true;
+    let second = sim.pickup(PLAYER_START, Pickup::Shield);
+    sim.steps(1);
+    assert!(sim.run().shield);
+    assert!(sim.exists(second), "a second shield stays on the road");
+    sim.run_mut().protection = 1.0;
+    sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert!(sim.run().shield);
+    assert_eq!(sim.run().lives, 3);
+}
+
+#[test]
+fn pickups_are_collected_even_at_extreme_speed() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.0.world_mut().insert_resource(PlayerTuning {
+        cruise_speed: 30_000.0,
+        ..default()
+    });
+    sim.pickup(PLAYER_START + Vec2::Y * 180.0, Pickup::Shield);
+    sim.steps(1);
+    assert!(sim.run().shield);
+}
+
+#[test]
+fn restart_removes_pickups_and_the_held_shield() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.run_mut().shield = true;
+    sim.pickup(Vec2::new(LANES[0], 300.0), Pickup::Heart);
+    sim.controls().restart = true;
+    sim.steps(1);
+    assert!(!sim.run().shield);
+    assert!(!sim.run().shield_absorbed);
+    let world = sim.0.world_mut();
+    assert_eq!(world.query::<&Pickup>().iter(world).count(), 0);
+}
+
+#[test]
+fn pickup_clearance_predicts_cars_closing_in_before_the_player_arrives() {
+    let cruise = 300.0;
+    // Oncoming car behind the pickup would catch up with it.
+    assert!(!keeps_clear(480.0, 880.0, -150.0, cruise));
+    assert!(keeps_clear(480.0, 1180.0, -150.0, cruise));
+    // The pickup catches a slower same-direction car ahead of it.
+    assert!(!keeps_clear(480.0, 180.0, 140.0, cruise));
+    assert!(keeps_clear(480.0, -200.0, 140.0, cruise));
+    // A same-direction car behind it drives away from the pickup.
+    assert!(keeps_clear(480.0, 480.0 + PICKUP_CLEARANCE, 140.0, cruise));
+    assert!(!keeps_clear(480.0, 680.0, 140.0, cruise));
+}
+
+/// Drives five minutes beside the lanes, so nothing is collected, and records
+/// every pickup spawn while checking clearance and one pickup at a time.
+fn pickup_trace(lives: u8, shield: bool, seed: u64) -> Vec<(usize, f32, Pickup)> {
+    let mut sim = Sim::new();
+    sim.0.insert_resource(PickupFlow::with_seed(seed));
+    sim.run_mut().lives = lives;
+    sim.run_mut().shield = shield;
+    sim.run_mut().protection = f32::INFINITY;
+    let world = sim.0.world_mut();
+    world
+        .query_filtered::<&mut Position, With<Player>>()
+        .single_mut(world)
+        .unwrap()
+        .0
+        .x = 70.0;
+    let mut seen = Vec::new();
+    let mut spawns = Vec::new();
+    for tick in 0..64 * 300 {
+        sim.steps(1);
+        let world = sim.0.world_mut();
+        let pickups: Vec<_> = world
+            .query::<(Entity, &Pickup, &Position)>()
+            .iter(world)
+            .map(|(id, kind, p)| (id, *kind, p.0))
+            .collect();
+        assert!(pickups.len() <= 1, "at most one pickup on the road");
+        let cars: Vec<_> = world
+            .query_filtered::<&Position, With<Traffic>>()
+            .iter(world)
+            .map(|p| p.0)
+            .collect();
+        for (id, kind, at) in pickups {
+            if !seen.contains(&id) {
+                seen.push(id);
+                spawns.push((tick, at.x, kind));
+            }
+            if at.y > PICKUP_PASSED_Y {
+                for car in cars.iter().filter(|car| car.x == at.x) {
+                    assert!(
+                        (car.y - at.y).abs() >= PICKUP_CLEARANCE - 0.01,
+                        "car too close to pickup at tick {tick}, seed {seed}"
+                    );
+                }
+            }
+        }
+    }
+    spawns
+}
+
+#[test]
+fn pickups_are_rare_fair_and_only_appear_when_useful() {
+    for (lives, shield, kinds) in [
+        (3, false, &[Pickup::Shield][..]),
+        (2, true, &[Pickup::Heart][..]),
+        (2, false, &[Pickup::Heart, Pickup::Shield][..]),
+    ] {
+        for seed in [1, 2] {
+            let spawns = pickup_trace(lives, shield, seed);
+            // 400 to 900 metres apart: ten to 23 within five minutes of driving.
+            assert!(
+                (10..=23).contains(&spawns.len()),
+                "{} pickups for seed {seed}",
+                spawns.len()
+            );
+            assert!(spawns.iter().all(|(_, _, kind)| kinds.contains(kind)));
+            assert!(kinds.iter().all(|kind| spawns.iter().any(|s| s.2 == *kind)));
+        }
+    }
+    assert!(pickup_trace(3, true, 1).is_empty());
+}
+
+#[test]
+fn pickup_spawns_are_reproducible_with_a_seed() {
+    let first = pickup_trace(2, false, 5);
+    assert_eq!(first, pickup_trace(2, false, 5));
+    assert_ne!(first, pickup_trace(2, false, 6));
 }

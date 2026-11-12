@@ -1,8 +1,11 @@
 //! Boost, distance, swept collisions, and the lifecycle of a drive.
 use bevy::prelude::*;
 
-use crate::level::{CAR_SIZE, PLAYER_START, Traffic, TrafficFlow};
+use crate::level::{CAR_SIZE, OnRoad, PLAYER_START, Traffic, TrafficFlow};
+use crate::pickups::PickupFlow;
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
+
+pub const MAX_LIVES: u8 = 3;
 
 #[derive(Resource, Clone, Debug)]
 pub struct Run {
@@ -15,6 +18,10 @@ pub struct Run {
     /// Empty tanks must be released before boost can be used again.
     pub exhausted: bool,
     pub protection: f32,
+    /// At most one shield is held; it absorbs the next collision.
+    pub shield: bool,
+    /// Whether the most recent hit was absorbed by a shield, for presentation.
+    pub shield_absorbed: bool,
     pub finished: bool,
     pub just_restarted: bool,
 }
@@ -22,7 +29,7 @@ pub struct Run {
 impl Default for Run {
     fn default() -> Self {
         Self {
-            lives: 3,
+            lives: MAX_LIVES,
             distance: 0.0,
             previous_distance: 0.0,
             energy: 1.0,
@@ -30,6 +37,8 @@ impl Default for Run {
             boosting: false,
             exhausted: false,
             protection: 0.0,
+            shield: false,
+            shield_absorbed: false,
             finished: false,
             just_restarted: false,
         }
@@ -52,14 +61,15 @@ pub fn restart_run(
     mut controls: ResMut<Controls>,
     mut run: ResMut<Run>,
     mut flow: ResMut<TrafficFlow>,
-    traffic: Query<Entity, With<Traffic>>,
+    mut pickup_flow: ResMut<PickupFlow>,
+    road_objects: Query<Entity, OnRoad>,
     mut players: Query<(&mut Position, &mut PreviousPosition), With<Player>>,
 ) {
     run.just_restarted = std::mem::take(&mut controls.restart);
     if !run.just_restarted {
         return;
     }
-    for entity in &traffic {
+    for entity in &road_objects {
         commands.entity(entity).despawn();
     }
     for (mut position, mut previous) in &mut players {
@@ -68,6 +78,7 @@ pub fn restart_run(
     }
     *controls = Controls::default();
     *flow = TrafficFlow::default();
+    *pickup_flow = PickupFlow::default();
     *run = Run {
         just_restarted: true,
         ..default()
@@ -144,7 +155,11 @@ pub fn collide(
             )
         {
             car.hit = true;
-            run.lives = run.lives.saturating_sub(1);
+            // A shield replaces only the heart loss; the hit still grants protection.
+            run.shield_absorbed = std::mem::take(&mut run.shield);
+            if !run.shield_absorbed {
+                run.lives = run.lives.saturating_sub(1);
+            }
             run.protection = tuning.protection_seconds;
             if run.lives == 0 {
                 run.finished = true;

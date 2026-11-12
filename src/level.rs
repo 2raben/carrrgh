@@ -1,6 +1,7 @@
 //! Road geometry and continuous random traffic; no rendering or device input.
 use bevy::prelude::*;
 
+use crate::pickups::{Pickup, keeps_clear};
 use crate::player::{PlayerTuning, Position, PreviousPosition};
 use crate::run::Run;
 
@@ -19,6 +20,9 @@ pub struct Traffic {
     pub speed: f32,
     pub hit: bool,
 }
+
+/// Filter for everything that drives or lies on the road besides the player.
+pub type OnRoad = Or<(With<Traffic>, With<Pickup>)>;
 
 #[derive(Resource, Default)]
 pub struct TrafficFlow {
@@ -66,6 +70,7 @@ pub fn spawn_traffic(
     tuning: Res<PlayerTuning>,
     mut flow: ResMut<TrafficFlow>,
     traffic: Query<(&Traffic, &Position)>,
+    pickups: Query<&Position, With<Pickup>>,
 ) {
     flow.cooldown -= time.delta_secs();
     if flow.cooldown > 0.0 {
@@ -95,6 +100,13 @@ pub fn spawn_traffic(
         }) {
             continue;
         }
+        // Never close in on a pickup before the player can reach it.
+        if pickups
+            .iter()
+            .any(|p| p.0.x == x && !keeps_clear(p.0.y, SPAWN_Y, speed, tuning.cruise_speed))
+        {
+            continue;
+        }
         commands.spawn((
             Name::new("Traffic"),
             Traffic { speed, hit: false },
@@ -119,8 +131,9 @@ pub fn move_traffic(
     }
 }
 
-pub fn remove_traffic(mut commands: Commands, traffic: Query<(Entity, &Position), With<Traffic>>) {
-    for (entity, position) in &traffic {
+/// Removes traffic and pickups that have left the bottom of the view.
+pub fn remove_offscreen(mut commands: Commands, road_objects: Query<(Entity, &Position), OnRoad>) {
+    for (entity, position) in &road_objects {
         if position.0.y < DESPAWN_Y {
             commands.entity(entity).despawn();
         }
