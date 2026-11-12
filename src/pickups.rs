@@ -87,18 +87,18 @@ pub fn spawn_pickups(
         flow.remaining = PickupFlow::interval(&mut flow.rng);
         return;
     };
-    let mut lanes = LANES;
+    let mut lanes = [0, 1, 2];
     flow.rng.shuffle(&mut lanes);
     // If no lane is clear, the pickup stays due and is retried next tick.
-    let Some(x) = lanes.into_iter().find(|&x| {
+    let Some(lane) = lanes.into_iter().find(|&lane| {
         traffic
             .iter()
-            .filter(|(_, p)| p.0.x == x)
+            .filter(|(car, _)| car.occupies(lane))
             .all(|(car, p)| keeps_clear(SPAWN_Y, p.0.y, car.speed, tuning.cruise_speed))
     }) else {
         return;
     };
-    let at = Vec2::new(x, SPAWN_Y);
+    let at = Vec2::new(LANES[lane], SPAWN_Y);
     commands.spawn((
         Name::new("Pickup"),
         kind,

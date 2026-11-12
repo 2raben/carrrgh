@@ -1,7 +1,7 @@
 //! Deterministic checks through the actual fixed-step simulation.
 use crate::level::{
-    CAR_SIZE, ESCAPE_SPACING, LANES, PLAYER_START, ROAD_HALF_WIDTH, TRAFFIC_SPACING, Traffic,
-    TrafficFlow, blocks_all_lanes,
+    CAR_SIZE, LANES, LaneChange, PLAYER_START, ROAD_HALF_WIDTH, SIGNAL_SECONDS, TRAFFIC_SPACING,
+    TRUCK_SIZE, Traffic, TrafficFlow, VehicleKind, blocks_all_lanes,
 };
 use crate::pickups::{PICKUP_CLEARANCE, PICKUP_PASSED_Y, Pickup, PickupFlow, keeps_clear};
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
@@ -48,7 +48,17 @@ impl Sim {
         self.0
             .world_mut()
             .spawn((
-                Traffic { speed, hit: false },
+                Traffic {
+                    change_cooldown: f32::INFINITY,
+                    ..Traffic::new(
+                        LANES
+                            .iter()
+                            .position(|x| (*x - at.x).abs() <= 70.0)
+                            .unwrap_or(1),
+                        speed,
+                        VehicleKind::Car,
+                    )
+                },
                 Position(at),
                 PreviousPosition(at),
             ))
@@ -119,21 +129,25 @@ fn boost_increases_distance_depletes_and_recharges_without_pulsing() {
 }
 
 #[test]
-fn every_1500_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
+fn every_1000_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
     let mut baseline = Sim::new();
     baseline.steps(1);
     let base_interval = baseline.0.world().resource::<TrafficFlow>().cooldown;
     for (metres, step) in [
         (0.0, 0),
-        (1499.0, 0),
-        (1500.0, 1),
-        (2999.0, 1),
-        (3000.0, 2),
-        (4500.0, 3),
-        (6000.0, 4),
-        (7500.0, 5),
-        (9000.0, 6),
-        (150_000.0, 6),
+        (999.0, 0),
+        (1000.0, 1),
+        (1999.0, 1),
+        (2000.0, 2),
+        (3000.0, 3),
+        (3999.0, 3),
+        (4000.0, 4),
+        (5000.0, 5),
+        (6000.0, 6),
+        (7000.0, 7),
+        (8000.0, 8),
+        (9000.0, 9),
+        (150_000.0, 9),
     ] {
         for boost in [false, true] {
             let mut sim = Sim::new();
@@ -155,12 +169,199 @@ fn every_1500_metres_increases_spawn_rate_and_speed_up_to_the_limit() {
 fn crossing_a_distance_threshold_accelerates_on_the_next_tick() {
     let mut sim = Sim::new();
     sim.quiet();
-    sim.0.world_mut().resource_mut::<Run>().distance = 14_999.0;
+    sim.0.world_mut().resource_mut::<Run>().distance = 9_999.0;
     sim.steps(1);
     assert_eq!(sim.run().speed, 300.0);
-    assert!(sim.run().distance >= 15_000.0);
+    assert!(sim.run().distance >= 10_000.0);
     sim.steps(1);
     assert!((sim.run().speed - 315.0).abs() < 0.001);
+}
+
+#[test]
+fn trucks_unlock_at_4000_metres_and_offsets_stay_within_the_lane() {
+    for metres in [0.0, 3999.0, 4000.0, 7000.0] {
+        let mut trucks = 0;
+        let mut offset_sides = [false; 2];
+        for seed in 0..100 {
+            let mut sim = Sim::new();
+            sim.run_mut().distance = metres * 10.0;
+            sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
+            sim.steps(1);
+            let world = sim.0.world_mut();
+            let (car, p) = world
+                .query::<(&Traffic, &Position)>()
+                .single(world)
+                .unwrap();
+            trucks += usize::from(car.kind == VehicleKind::Truck);
+            let offset = p.0.x - LANES[car.lane];
+            offset_sides[usize::from(offset > 0.0)] = true;
+            assert!(offset.abs() <= car.kind.max_offset());
+            assert!(offset.abs() + car.kind.size().x * 0.5 < 70.0);
+        }
+        assert!(offset_sides.into_iter().all(|seen| seen));
+        if metres < 4000.0 {
+            assert_eq!(trucks, 0);
+        } else {
+            assert!(
+                (1..100).contains(&trucks),
+                "trucks mix with cars at {metres} m"
+            );
+        }
+    }
+}
+
+#[test]
+fn trucks_collide_across_their_full_width_and_length() {
+    assert!(TRUCK_SIZE.cmpgt(CAR_SIZE).all());
+    for offset in [Vec2::new(52.0, 0.0), Vec2::new(0.0, 100.0)] {
+        for kind in [VehicleKind::Car, VehicleKind::Truck] {
+            let mut sim = Sim::new();
+            sim.quiet();
+            let id = sim.car(PLAYER_START + offset, 300.0);
+            sim.0.world_mut().get_mut::<Traffic>(id).unwrap().kind = kind;
+            sim.steps(1);
+            assert_eq!(
+                sim.run().lives,
+                if kind == VehicleKind::Truck { 2 } else { 3 }
+            );
+        }
+    }
+}
+
+#[test]
+fn lane_changes_signal_before_moving_and_finish_at_the_target_offset() {
+    for (lane, target, speed) in [(0, 1, 140.0), (2, 1, -150.0)] {
+        for kind in [VehicleKind::Car, VehicleKind::Truck] {
+            let mut sim = Sim::new();
+            sim.quiet();
+            let start = LANES[lane] + 15.0;
+            let target_x = LANES[target] - 20.0;
+            let id = sim.car(Vec2::new(start, 480.0), speed);
+            {
+                let mut car = sim.0.world_mut().get_mut::<Traffic>(id).unwrap();
+                car.kind = kind;
+                car.change = Some(LaneChange {
+                    target_lane: target,
+                    start_x: start,
+                    target_x,
+                    elapsed: 0.0,
+                });
+            }
+            let side = (target_x - start).signum();
+            let mut saw_on = false;
+            let mut saw_off = false;
+            for _ in 0..(SIGNAL_SECONDS * 64.0) as usize {
+                sim.steps(1);
+                let car = sim.0.world().get::<Traffic>(id).unwrap();
+                assert_eq!(sim.0.world().get::<Position>(id).unwrap().0.x, start);
+                assert!(car.occupies(lane) && car.occupies(target));
+                match car.signal_side() {
+                    Some(lit) => {
+                        assert_eq!(lit, side);
+                        saw_on = true;
+                    }
+                    None => saw_off = true,
+                }
+            }
+            assert!(saw_on && saw_off, "the warning must blink");
+            // Keep the vehicle on screen while checking the entire manoeuvre.
+            sim.0.world_mut().get_mut::<Traffic>(id).unwrap().speed = 300.0;
+            sim.steps(32);
+            let halfway = sim.0.world().get::<Position>(id).unwrap().0.x;
+            assert!((halfway - start) * side > 0.0);
+            assert!((target_x - halfway) * side > 0.0);
+            sim.steps(64);
+            let car = sim.0.world().get::<Traffic>(id).unwrap();
+            assert!(car.change.is_none());
+            assert_eq!(car.lane, target);
+            assert_eq!(car.signal_side(), None);
+            assert_eq!(sim.0.world().get::<Position>(id).unwrap().0.x, target_x);
+        }
+    }
+}
+
+#[test]
+fn lane_change_planner_respects_traffic_pickups_and_adjacent_lanes() {
+    for obstacle in [None, Some(0), Some(1), Some(2)] {
+        let mut sim = Sim::new();
+        sim.quiet();
+        let id = sim.car(Vec2::new(LANES[0] + 20.0, 320.0), 140.0);
+        sim.0
+            .world_mut()
+            .get_mut::<Traffic>(id)
+            .unwrap()
+            .change_cooldown = 0.0;
+        match obstacle {
+            Some(0) => {
+                sim.car(Vec2::new(LANES[1] - 30.0, 300.0), 140.0);
+            }
+            Some(1) => {
+                sim.car(Vec2::new(LANES[1], -100.0), -150.0);
+            }
+            Some(2) => {
+                sim.pickup(Vec2::new(LANES[1], 320.0), Pickup::Shield);
+            }
+            _ => {}
+        }
+        sim.steps(1);
+        let car = sim.0.world().get::<Traffic>(id).unwrap();
+        if obstacle.is_some() {
+            assert!(
+                car.change.is_none(),
+                "unsafe reservation for obstacle {obstacle:?}"
+            );
+        } else {
+            assert_eq!(car.change.unwrap().target_lane, 1);
+            assert_eq!(car.signal_side(), Some(1.0));
+        }
+    }
+}
+
+#[test]
+fn changing_lanes_hits_a_player_waiting_on_the_lane_marking() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    let world = sim.0.world_mut();
+    world
+        .query_filtered::<&mut Position, With<Player>>()
+        .single_mut(world)
+        .unwrap()
+        .0
+        .x = 70.0;
+    let id = sim.car(Vec2::new(0.0, PLAYER_START.y), 300.0);
+    sim.0.world_mut().get_mut::<Traffic>(id).unwrap().change = Some(LaneChange {
+        target_lane: 2,
+        start_x: 0.0,
+        target_x: 140.0,
+        elapsed: 0.0,
+    });
+    sim.steps(51);
+    assert_eq!(sim.run().lives, 3, "no movement during the warning");
+    sim.steps(32);
+    assert_eq!(sim.run().lives, 2, "crossing a marking must collide");
+}
+
+#[test]
+fn stationary_lane_markings_are_no_longer_safe_in_real_traffic() {
+    for x in [-70.0, 70.0] {
+        for seed in [1, 7, 42] {
+            let mut sim = Sim::new();
+            sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
+            sim.0.world_mut().resource_mut::<PickupFlow>().remaining = f32::INFINITY;
+            let world = sim.0.world_mut();
+            world
+                .query_filtered::<&mut Position, With<Player>>()
+                .single_mut(world)
+                .unwrap()
+                .0
+                .x = x;
+            sim.steps(64 * 120);
+            assert!(
+                sim.run().finished,
+                "marking x={x} stayed safe for seed {seed}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -263,24 +464,33 @@ fn traffic_directions_have_correct_relative_speed_and_cleanup() {
 #[test]
 fn spawn_safety_detects_oncoming_cars_closing_a_future_gap() {
     let cars = [
-        (Vec2::new(LANES[0], 480.0), -150.0),
-        (Vec2::new(LANES[1], 0.0), 140.0),
-        (Vec2::new(LANES[2], -20.0), 140.0),
+        (
+            Traffic::new(0, -150.0, VehicleKind::Car),
+            Vec2::new(LANES[0], 480.0),
+        ),
+        (
+            Traffic::new(1, 140.0, VehicleKind::Car),
+            Vec2::new(LANES[1], 0.0),
+        ),
+        (
+            Traffic::new(2, 140.0, VehicleKind::Car),
+            Vec2::new(LANES[2], -20.0),
+        ),
     ];
     // Clear now, but the oncoming car would catch the other two before they exit.
     assert!(blocks_all_lanes(cars, 300.0));
     let mut cleared_first = cars;
-    cleared_first[2].0.y = -450.0;
+    cleared_first[2].1.y = -450.0;
     assert!(!blocks_all_lanes(cleared_first, 300.0));
 }
 
 #[test]
 fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
-    for difficulty in 0..=6 {
+    for difficulty in 0..=9 {
         for seed in [1, 7, 42] {
             let mut sim = Sim::new();
             sim.0.world_mut().resource_mut::<TrafficFlow>().rng = fastrand::Rng::with_seed(seed);
-            sim.0.world_mut().resource_mut::<Run>().distance = difficulty as f64 * 15_000.0;
+            sim.0.world_mut().resource_mut::<Run>().distance = difficulty as f64 * 10_000.0;
             // Observe traffic independently of a stationary player's damage.
             sim.0.world_mut().resource_mut::<Run>().protection = 1000.0;
             let mut previous = Vec::new();
@@ -295,7 +505,7 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
                 let cars: Vec<_> = world
                     .query::<(Entity, &Position, &Traffic)>()
                     .iter(world)
-                    .map(|(id, p, car)| (id, p.0, car.speed))
+                    .map(|(id, p, car)| (id, p.0, *car))
                     .collect();
                 let added: Vec<_> = cars
                     .iter()
@@ -305,24 +515,26 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
                 if !added.is_empty() && cars.iter().any(|(id, _, _)| previous.contains(id)) {
                     overlapping_spawns += 1;
                 }
-                for (_, p, speed) in &added {
-                    used_lanes[LANES.iter().position(|x| *x == p.x).unwrap()] = true;
-                    directions[usize::from(*speed > 0.0)] = true;
+                for (_, _, car) in &added {
+                    used_lanes[car.lane] = true;
+                    directions[usize::from(car.speed > 0.0)] = true;
                 }
-                for (i, (_, a, speed_a)) in cars.iter().enumerate() {
-                    for (j, (_, b, speed_b)) in cars.iter().enumerate().skip(i + 1) {
-                        if a.x == b.x {
-                            assert_eq!(speed_a, speed_b);
+                for (i, (_, a, car_a)) in cars.iter().enumerate() {
+                    for (j, (_, b, car_b)) in cars.iter().enumerate().skip(i + 1) {
+                        if (0..3).any(|lane| car_a.occupies(lane) && car_b.occupies(lane)) {
+                            assert_eq!(car_a.speed, car_b.speed);
                             assert!((a.y - b.y).abs() >= TRAFFIC_SPACING - 0.01);
                         }
-                        for (_, c, _) in cars.iter().skip(j + 1) {
-                            if a.x != b.x && b.x != c.x && a.x != c.x {
-                                let spread = a.y.max(b.y).max(c.y) - a.y.min(b.y).min(c.y);
-                                assert!(
-                                    spread > ESCAPE_SPACING - 0.01,
-                                    "wall at difficulty {difficulty}, seed {seed}, tick {tick}"
-                                );
-                            }
+                        let half_size = (car_a.kind.size() + car_b.kind.size()) * 0.5;
+                        assert!(!(*a - *b).abs().cmple(half_size).all(), "traffic overlap");
+                        for (_, c, car_c) in cars.iter().skip(j + 1) {
+                            assert!(
+                                !blocks_all_lanes(
+                                    [(*car_a, *a), (*car_b, *b), (*car_c, *c)],
+                                    300.0
+                                ),
+                                "wall at difficulty {difficulty}, seed {seed}, tick {tick}"
+                            );
                         }
                     }
                 }
@@ -496,9 +708,9 @@ fn pickup_trace(lives: u8, shield: bool, seed: u64) -> Vec<(usize, f32, Pickup)>
             .collect();
         assert!(pickups.len() <= 1, "at most one pickup on the road");
         let cars: Vec<_> = world
-            .query_filtered::<&Position, With<Traffic>>()
+            .query::<(&Traffic, &Position)>()
             .iter(world)
-            .map(|p| p.0)
+            .map(|(car, p)| (*car, p.0))
             .collect();
         for (id, kind, at) in pickups {
             if !seen.contains(&id) {
@@ -506,7 +718,8 @@ fn pickup_trace(lives: u8, shield: bool, seed: u64) -> Vec<(usize, f32, Pickup)>
                 spawns.push((tick, at.x, kind));
             }
             if at.y > PICKUP_PASSED_Y {
-                for car in cars.iter().filter(|car| car.x == at.x) {
+                let lane = LANES.iter().position(|x| *x == at.x).unwrap();
+                for (_, car) in cars.iter().filter(|(car, _)| car.occupies(lane)) {
                     assert!(
                         (car.y - at.y).abs() >= PICKUP_CLEARANCE - 0.01,
                         "car too close to pickup at tick {tick}, seed {seed}"

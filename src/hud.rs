@@ -135,6 +135,7 @@ fn spawn_hud(mut commands: Commands) {
                 children![heart(0), heart(1), heart(2), shield_icon()]
             ),
             (Progress, text("", 20.0)),
+            text("Watch the turn signals.\nTrucks from 4000 m.", 14.0),
             text("BOOST / SPACE", 15.0),
             (
                 Node {
@@ -184,7 +185,11 @@ fn show_run(
     mut shield: Query<&mut BackgroundColor, With<ShieldIcon>>,
 ) {
     for mut text in &mut progress {
-        text.0 = format!("{:06.0} m", run.distance / 10.0);
+        text.0 = format!(
+            "{:06.0} m\nLEVEL {} / 10",
+            run.distance / 10.0,
+            run.difficulty_step() + 1
+        );
     }
     for mut node in &mut bars {
         node.width = Val::Percent(run.energy * 100.0);

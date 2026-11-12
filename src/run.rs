@@ -48,7 +48,17 @@ impl Default for Run {
 impl Run {
     /// Ten world units per metre; cap progression to preserve reaction time.
     pub fn difficulty_step(&self) -> usize {
-        (self.distance / 15_000.0).floor().clamp(0.0, 6.0) as usize
+        (self.distance / 10_000.0).floor().clamp(0.0, 9.0) as usize
+    }
+
+    pub fn truck_chance(&self) -> f32 {
+        if self.distance < 40_000.0 {
+            0.0
+        } else if self.distance < 70_000.0 {
+            0.2
+        } else {
+            0.35
+        }
     }
 }
 
@@ -151,7 +161,7 @@ pub fn collide(
             && swept_hit(
                 previous.0 - previous_player.0,
                 position.0 - player.0,
-                CAR_SIZE,
+                (CAR_SIZE + car.kind.size()) * 0.5,
             )
         {
             car.hit = true;

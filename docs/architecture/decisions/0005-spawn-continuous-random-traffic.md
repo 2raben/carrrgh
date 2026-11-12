@@ -3,6 +3,7 @@ tags: [adr]
 status: accepted
 date: 2026-11-12
 amends: [0004-drive-in-road-relative-coordinates.md]
+amended-by: [0006-reserve-lanes-for-signalled-traffic-manoeuvres.md]
 sources:
   - src/level.rs
   - src/run.rs
@@ -11,6 +12,9 @@ sources:
 ---
 
 # 0005 — Spawn continuous random traffic with predictive spacing checks
+
+[ADR 0006](0006-reserve-lanes-for-signalled-traffic-manoeuvres.md) amends lane
+identity, reservations and vehicle sizes, and updates the difficulty thresholds.
 
 ## Context
 

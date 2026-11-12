@@ -23,6 +23,7 @@ impl Plugin for SimulationPlugin {
                         player::step_player,
                         level::spawn_traffic,
                         pickups::spawn_pickups,
+                        level::plan_lane_changes,
                         level::move_traffic,
                         pickups::move_pickups,
                         pickups::collect_pickups,
