@@ -15,6 +15,10 @@ cars approach faster. Traffic arrives continuously on random lanes with varying 
 speed but offers no protection. A hit costs one heart and briefly grants protection,
 shown by a gold outline. After three hits the drive ends and displays your distance.
 
+Rarely, a pickup lies on the road. A red heart restores a lost heart. A cyan shield
+is kept (at most one) and absorbs your next hit without costing a heart; the HUD
+shows it beside your hearts and a bubble surrounds your car.
+
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Steer left / right | A / D or Left / Right | Left stick or D-pad |

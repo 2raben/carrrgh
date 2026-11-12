@@ -1,9 +1,10 @@
 # Architecture
 
 The application implements [Car Drive](../pitches/car-drive/pitch--car-movements.md),
-a three-lane arcade driving game replacing the starter platformer. It uses Rust
-2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml) and
-[Cargo.lock](../../Cargo.lock). Traffic randomness uses `fastrand` 2.5.0.
+a three-lane arcade driving game replacing the starter platformer, with the
+[power-ups and shields](../pitches/power-ups/pitch--power-ups-and-shields.md)
+extension. It uses Rust 2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml)
+and [Cargo.lock](../../Cargo.lock). Traffic and pickup randomness uses `fastrand` 2.5.0.
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for checks and
 [ADRs](decisions/README.md) for design history.
 
@@ -18,25 +19,30 @@ Only input reads devices; only presentation writes `Transform`.
 | --- | --- |
 | [simulation.rs](../../src/simulation.rs) | Resources, player startup, fixed-step ordering |
 | [level.rs](../../src/level.rs) | Road bounds, lane centres, traffic components, random spawning with spacing checks, movement and cleanup |
+| [pickups.rs](../../src/pickups.rs) | Heart and shield pickups: rare random spawning, lane clearance, movement and collection |
 | [player.rs](../../src/player.rs) | `Controls`, car-centred `Position`/`PreviousPosition`, movement tuning, lateral steering |
-| [run.rs](../../src/run.rs) | Distance, energy, protection, swept collision, game over and restart |
+| [run.rs](../../src/run.rs) | Distance, energy, protection, held shield, swept collision, game over and restart |
 | [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate` |
-| [visuals.rs](../../src/visuals.rs) | Procedural car sprites, lane marks, interpolation, boost exhaust and protection outline |
+| [visuals.rs](../../src/visuals.rs) | Procedural car and pickup sprites, lane marks, interpolation, boost exhaust, shield bubble and protection outline |
 | [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
-| [hud.rs](../../src/hud.rs) | Hearts, distance in metres, boost gauge, controls and game-over cue |
+| [hud.rs](../../src/hud.rs) | Hearts, held shield, distance in metres, boost gauge, controls and game-over cue |
 | [tests.rs](../../src/tests.rs) | Deterministic tests of the actual simulation |
 
 ## Fixed-step flow
 
 At Bevy's default 64 Hz, `GameSystems` chains:
 
-1. Consume the latched restart request. Reset all run state, the traffic timer,
-   player current/previous positions and controls; reseed randomness and despawn traffic. Skip driving
+1. Consume the latched restart request. Reset all run state including the held
+   shield, the traffic timer, the pickup distance, player current/previous positions
+   and controls; reseed randomness and despawn traffic and pickups. Skip driving
    for that tick so the reset state is exact.
 2. Unless finished or just restarted, update protection, boost and distance;
    steer the player; attempt an individual traffic spawn when its timer expires;
-   move traffic; resolve collisions; remove off-screen traffic. Chaining applies deferred spawns
-   before movement and deferred removals before the next tick.
+   attempt a pickup spawn when its distance is due; move traffic and pickups;
+   collect pickups; resolve collisions; remove off-screen traffic and pickups.
+   Chaining applies deferred spawns before movement and deferred removals before
+   the next tick. Collection precedes collisions, so a pickup reached in the same
+   tick as a car already counts.
 
 Held steering and boost apply each tick; restart is consumed once. Game over gates
 simulation itself, not just input. In `PostUpdate`, positions and road distance
@@ -98,6 +104,36 @@ steady gold outline. Each traffic car can damage the player only once. No collis
 impulses or rotation physics are simulated. The third hit freezes the drive and
 shows distance and restart controls.
 
+## Hearts and shields
+
+Pickups are 36 × 36 boxes lying on the road at a lane centre; they move down at the
+player's speed and leave below y = −470. A heart restores one lost heart, up to three.
+A shield is held until the next collision, which then still marks the car as hit and
+grants protection but costs no heart; it also saves the last heart. At most one
+shield is held. A pickup that would have no effect (a heart at full hearts, a second
+shield) stays on the road. Collection uses the same swept test as traffic with the
+combined half-extents, so boost cannot skip a pickup. Collisions during protection
+do not consume the shield.
+
+The next pickup becomes due after a random 400–900 metres of driven distance,
+independent of difficulty. At most one pickup is on the road. When due, the kind is
+chosen randomly among the useful ones: hearts only while a heart is missing, shields
+only while none is held. If neither is useful, the slot is skipped and a new distance
+is drawn, so a hit never immediately summons a heart. Pickups spawn at y = 480 in a
+shuffled lane; if no lane is clear, the spawn retries each tick.
+
+A lane is clear when every car in it keeps at least 240 units between centres from
+the pickup until the pickup passes 78 units below the player's start line. Their gap
+changes only by the car's own speed, so checking both ends of the pickup's lifetime
+at initial cruise speed (its longest) covers the whole span. Traffic spawning applies
+the same check against pickups already on the road. This keeps cars off pickups
+in their lane; reaching the lane through other traffic remains the player's risk.
+Pickups draw from their own seeded generator, separate from traffic's.
+
+A held shield shows as a translucent cyan bubble around the player and a cyan
+shield icon beside the HUD hearts. When a shield absorbs a hit, the protection
+outline is white-cyan instead of gold.
+
 These choices supersede platformer movement in
 [ADR 0004](decisions/0004-drive-in-road-relative-coordinates.md). Tuning values are
 initial play-test values, not claims of final balance.
@@ -110,7 +146,10 @@ protection and repeated contact, tunnelling and near misses, relative traffic
 motion and cleanup, game-over freeze, complete restart, difficulty thresholds and
 caps, reproducible random layouts, continuous individual spawning, and same-lane
 spacing and three-lane wall checks across seeds and difficulty levels with boost
-cycling. Graphical play checks are still required for
+cycling. Pickup tests cover heart and shield effects and limits, shields with
+protection and the last heart, collection at extreme speed, restart, the clearance
+prediction, rarity, useful kinds only, one pickup at a time, lane clearance with
+real traffic, and seeded reproducibility. Graphical play checks are still required for
 readability, input mapping and feel; see the contribution guide.
 
 Keep game behavior in focused ECS systems. New dependencies, persisted formats or

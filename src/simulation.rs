@@ -1,5 +1,5 @@
 //! Fixed-step simulation, usable with MinimalPlugins and no window.
-use crate::{level, player, run};
+use crate::{level, pickups, player, run};
 use bevy::prelude::*;
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -12,6 +12,7 @@ impl Plugin for SimulationPlugin {
             .init_resource::<player::Controls>()
             .init_resource::<run::Run>()
             .init_resource::<level::TrafficFlow>()
+            .init_resource::<pickups::PickupFlow>()
             .add_systems(Startup, player::spawn_player)
             .add_systems(
                 FixedUpdate,
@@ -21,9 +22,12 @@ impl Plugin for SimulationPlugin {
                         run::advance_run,
                         player::step_player,
                         level::spawn_traffic,
+                        pickups::spawn_pickups,
                         level::move_traffic,
+                        pickups::move_pickups,
+                        pickups::collect_pickups,
                         run::collide,
-                        level::remove_traffic,
+                        level::remove_offscreen,
                     )
                         .chain()
                         .run_if(run::driving),
