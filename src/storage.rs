@@ -4,7 +4,9 @@
 //! [`sqlite`], so another backend (for example browser storage) can replace it.
 use std::fmt;
 
+use crate::vehicles::{GarageRequest, GarageSnapshot};
 use bevy::tasks::BoxedFuture;
+use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 pub mod memory;
@@ -14,11 +16,11 @@ pub mod sqlite;
 pub const NAME_MAX_CHARS: usize = 16;
 
 /// Stable profile identity, assigned by the store.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProfileId(pub String);
 
 /// A trimmed name of 1–16 characters without control characters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerName(String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ impl fmt::Display for NameError {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub id: ProfileId,
     pub name: PlayerName,
@@ -79,9 +81,10 @@ pub struct RunCredit {
     pub run: RunId,
     pub profile: ProfileId,
     pub coins: u64,
+    pub proof: Option<crate::drive_proof::DriveProof>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StoreError {
     /// Storage could not be reached, read or written; a later attempt may work.
     Unavailable(String),
@@ -93,6 +96,7 @@ pub enum StoreError {
     /// The stored data is not a valid Car Drive save.
     Invalid(String),
     UnknownProfile,
+    Rejected(String),
 }
 
 impl fmt::Display for StoreError {
@@ -105,6 +109,7 @@ impl fmt::Display for StoreError {
             ),
             Self::Invalid(reason) => write!(f, "save is not valid: {reason}"),
             Self::UnknownProfile => write!(f, "profile not found"),
+            Self::Rejected(reason) => write!(f, "{reason}"),
         }
     }
 }
@@ -115,12 +120,32 @@ pub type StoreResult<T> = Result<T, StoreError>;
 /// access and asynchronous browser storage fit the same contract; game systems
 /// never wait for them.
 pub trait ProfileStore: Send + Sync + 'static {
+    fn online(&self) -> bool {
+        false
+    }
+    fn begin_drive(
+        &self,
+        _request: String,
+    ) -> BoxedFuture<'static, StoreResult<Option<crate::drive_proof::DriveTicket>>> {
+        Box::pin(async { Ok(None) })
+    }
     /// The earliest created profile, if any.
     fn load(&self) -> BoxedFuture<'static, StoreResult<Option<Profile>>>;
     /// Creates a profile with no coins.
     fn create(&self, name: PlayerName) -> BoxedFuture<'static, StoreResult<Profile>>;
     /// Adds the coins once per run id and returns the updated profile.
     fn credit(&self, credit: RunCredit) -> BoxedFuture<'static, StoreResult<Profile>>;
+    fn garage(
+        &self,
+        _profile: ProfileId,
+        _request: GarageRequest,
+    ) -> BoxedFuture<'static, StoreResult<GarageSnapshot>> {
+        Box::pin(async {
+            Err(StoreError::Rejected(
+                "Garage unavailable in this store".into(),
+            ))
+        })
+    }
 }
 
 #[cfg(test)]

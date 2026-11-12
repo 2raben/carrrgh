@@ -19,10 +19,12 @@ pub struct Controls {
     pub move_x: f32,
     pub boost: bool,
     pub restart: bool,
+    pub end_drive: bool,
 }
 
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct PlayerTuning {
+    pub size: Vec2,
     pub steer_speed: f32,
     pub cruise_speed: f32,
     pub boost_speed: f32,
@@ -35,6 +37,7 @@ pub struct PlayerTuning {
 impl Default for PlayerTuning {
     fn default() -> Self {
         Self {
+            size: CAR_SIZE,
             steer_speed: 420.0,
             cruise_speed: 300.0,
             boost_speed: 540.0,
@@ -62,7 +65,7 @@ pub fn step_player(
 ) {
     for (mut position, mut previous) in &mut players {
         previous.0 = position.0;
-        let limit = ROAD_HALF_WIDTH - CAR_SIZE.x * 0.5;
+        let limit = ROAD_HALF_WIDTH - tuning.size.x * 0.5;
         position.0.x = (position.0.x
             + controls.move_x.clamp(-1.0, 1.0) * tuning.steer_speed * time.delta_secs())
         .clamp(-limit, limit);

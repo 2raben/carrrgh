@@ -26,15 +26,33 @@ on restart, or when you quit. The balance is stored in `profiles.sqlite3` in you
 data directory (on Linux `~/.local/share/car-drive`); set `CAR_DRIVE_DATA_DIR`
 to use another directory, for example for play tests.
 
+Your garage starts with a free Opel Corsa. Buy any of ten vehicles, choose a color,
+equip tires, and purchase motor upgrades or a carbon body kit. Compare speed,
+steering, boost and size before confirming a purchase. The garage remembers your
+collection and active car. Selling a spare vehicle pays coins immediately; the
+marketplace then owns it and offers it with its upgrades. Keep at least one car
+and select another before selling the active one.
+
+The default market is local. For trading between separate clients, follow the
+[private marketplace guide](docs/marketplace.md). It uses a separate authoritative
+database, provisioned accounts and verified drives; local saves cannot be imported.
+
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Steer left / right | A / D or Left / Right | Left stick or D-pad |
 | Boost (hold) | Space | South (A / Cross) |
 | Restart | R or Backspace | Select |
+| Garage after game over / start from garage | G | Start |
+| Garage menu focus / activate | Up, Down / Enter | D-pad / South |
+| Garage section / cancel confirmation | Tab / Escape | Right shoulder / East |
 | Quit | Escape | – |
 
+Escape cancels in the garage; use the window close button to quit there.
+In shared-market mode R/Select submits the current drive; start the next one
+from the garage. Online runs end after 20 minutes.
+
 Release boost to recharge. If the tank empties, release before boosting again.
-Every 1,500 metres, traffic becomes denser and your speed increases, up to six steps.
+Every 1,000 metres, traffic becomes denser and your speed increases, up to ten levels.
 Restart resets difficulty and generates fresh traffic. Distance records are not saved. Movement values and traffic
 patterns are initial play-test values.
 

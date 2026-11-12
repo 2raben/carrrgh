@@ -6,6 +6,8 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::{ButtonState, InputSystems};
 use bevy::prelude::*;
 
+use crate::garage::{Garage, Intent, Tab};
+use crate::garage_ui::MenuActions;
 use crate::player::Controls;
 use crate::profile::{NameDraft, ProfilePhase};
 use crate::run::Run;
@@ -24,6 +26,7 @@ impl Plugin for InputPlugin {
         app.add_systems(
             PreUpdate,
             (
+                menu_controls.run_if(in_state(ProfilePhase::Playing)),
                 sample_controls.run_if(not(creating.clone())),
                 edit_name.run_if(creating),
                 quit,
@@ -38,8 +41,13 @@ fn sample_controls(
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&Gamepad>,
     run: Res<Run>,
+    garage: Res<Garage>,
+    storage: Res<crate::profile::Storage>,
     mut controls: ResMut<Controls>,
 ) {
+    if garage.open {
+        return;
+    }
     let any_key = |codes: &[KeyCode]| keys.any_pressed(codes.iter().copied());
     let any_key_just = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied());
     const LEFT: &[KeyCode] = &[KeyCode::KeyA, KeyCode::ArrowLeft];
@@ -69,7 +77,11 @@ fn sample_controls(
     };
     controls.boost = playing && boost;
     // Latch presses until a fixed step consumes them.
-    controls.restart |= restart;
+    if storage.0.online() {
+        controls.end_drive |= restart;
+    } else {
+        controls.restart |= restart;
+    }
 }
 
 /// Typed text uses the keyboard layout; Enter or a controller button confirms,
@@ -105,8 +117,54 @@ fn edit_name(
     }
 }
 
-fn quit(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
+fn quit(keys: Res<ButtonInput<KeyCode>>, garage: Res<Garage>, mut exit: MessageWriter<AppExit>) {
+    if keys.just_pressed(KeyCode::Escape) && !garage.open {
         exit.write(AppExit::Success);
+    }
+}
+
+fn menu_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut garage: ResMut<Garage>,
+    menu: Res<MenuActions>,
+    mut controls: ResMut<Controls>,
+) {
+    let pad = |button| pads.iter().any(|p| p.just_pressed(button));
+    if !garage.open {
+        if keys.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Start) {
+            garage.enqueue(Intent::Open);
+        }
+        return;
+    }
+    *controls = Controls::default();
+    let count = menu.0.len();
+    garage.focus = garage.focus.min(count.saturating_sub(1));
+    if count > 0 {
+        if keys.just_pressed(KeyCode::ArrowDown) || pad(GamepadButton::DPadDown) {
+            garage.focus = (garage.focus + 1) % count;
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) || pad(GamepadButton::DPadUp) {
+            garage.focus = (garage.focus + count - 1) % count;
+        }
+        if (keys.just_pressed(KeyCode::Enter) || pad(GamepadButton::South))
+            && let Some(intent) = menu.0.get(garage.focus)
+        {
+            garage.enqueue(intent.clone());
+        }
+    }
+    if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::RightTrigger) {
+        let tab = match garage.tab {
+            Tab::Owned => Tab::Catalog,
+            Tab::Catalog => Tab::Market,
+            Tab::Market => Tab::Owned,
+        };
+        garage.enqueue(Intent::Tab(tab));
+    }
+    if keys.just_pressed(KeyCode::Escape) || pad(GamepadButton::East) {
+        garage.enqueue(Intent::Cancel);
+    }
+    if keys.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Start) {
+        garage.enqueue(Intent::Start);
     }
 }

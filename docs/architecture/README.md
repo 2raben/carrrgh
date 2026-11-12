@@ -4,7 +4,8 @@ The application implements [Car Drive](../pitches/car-drive/pitch--car-movements
 a three-lane arcade driving game replacing the starter platformer, with the
 [power-ups and shields](../pitches/power-ups/pitch--power-ups-and-shields.md)
 extension, [lane changes and trucks](../pitches/traffic/pitch--lane-changes-and-trucks.md),
-and [coins and a player profile](../pitches/coins/pitch--coins-and-player-profile.md).
+and [coins and a player profile](../pitches/coins/pitch--coins-and-player-profile.md),
+plus the [garage, tuning and private marketplace experiment](../pitches/vehicles/pitch--garage-tuning-and-marketplace.md).
 It uses Rust 2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml)
 and [Cargo.lock](../../Cargo.lock). Traffic and pickup randomness uses `fastrand` 2.5.0.
 Native profile storage uses `rusqlite` 0.41 with bundled SQLite and `dirs` 7.0
@@ -32,6 +33,10 @@ Only input reads devices; only presentation writes `Transform`.
 | [visuals.rs](../../src/visuals.rs) | Procedural car, truck and pickup sprites, turn signals, lane marks, interpolation, boost exhaust, shield bubble and protection outline |
 | [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
 | [hud.rs](../../src/hud.rs) | Player name, coin balance and drive coins, storage problems, hearts, held shield, distance in metres, difficulty level, boost gauge, controls, game-over cue and create-player screen |
+| [vehicles.rs](../../src/vehicles.rs) | Stable catalogue/configuration types, prices, upgrades and vehicle-specific simulation tuning |
+| [garage.rs](../../src/garage.rs), [garage_ui.rs](../../src/garage_ui.rs) | Garage gating, confirmed asynchronous transactions, keyboard/controller/pointer menus and purchase previews |
+| [vehicle_art.rs](../../src/vehicle_art.rs) | Shared procedural model, paint, tire and body-kit shapes for garage and road |
+| [market.rs](../../src/market.rs), [drive_proof.rs](../../src/drive_proof.rs) | Private authenticated service/client, bounded input recording and headless authoritative replay |
 | [tests.rs](../../src/tests.rs) | Deterministic tests of the actual simulation |
 
 ## Fixed-step flow
@@ -53,8 +58,11 @@ At Bevy's default 64 Hz, `GameSystems` chains:
    tick as a car already counts.
 3. If the drive is over, report it as ended, once.
 
-The profile plugin runs `GameSystems` only in `ProfilePhase::Playing`; without
-the plugin, as in most headless tests, the drive starts immediately.
+The profile plugin runs `GameSystems` only in `ProfilePhase::Playing`. The garage
+plugin additionally gates it while the garage is open. After a restart, online
+ticket seeds prepare the traffic/pickup generators, then each driving tick records
+quantized input before advancing the simulation. Without these plugins, as in
+most headless tests, the drive starts immediately.
 
 Held steering and boost apply each tick; restart is consumed once. Game over gates
 simulation itself, not just input. In `PostUpdate`, positions and road distance
@@ -64,8 +72,11 @@ simulation is stopped.
 
 ## Road and movement
 
-The road spans x = −210…210 with lane centres −140, 0, 140. The player and ordinary
-cars have a 44 × 78 collision box anchored at their centre; trucks use 70 × 144.
+The road spans x = −210…210 with lane centres −140, 0, 140. The default Corsa and
+ordinary traffic cars have a 44 × 78 collision box anchored at their centre;
+trucks use 70 × 144. Player dimensions come from the selected model's tuning,
+from a 30 × 42 Bobby-Car to a 76 × 110 Fendt. Player road clamping, swept traffic
+and pickup collision tests use these dimensions.
 The player starts at (140, −230), moves
 sideways at up to 420 units/s, stops on release, and is clamped inside the road.
 The camera keeps the same world extent on resize, preserving reaction distance;
@@ -171,6 +182,12 @@ A held shield shows as a translucent cyan bubble around the player and a cyan
 shield icon beside the HUD hearts. When a shield absorbs a hit, the protection
 outline is white-cyan instead of gold.
 
+Garage models amend these baseline values: the traffic wall spacing grows for
+larger player dimensions and slower steering, and pickup clearance/lifetime
+grows for a longer player. Minimum cruising speed remains above same-direction
+traffic speed; the fastest tuned model stays below 1,000 units/s at level ten.
+The conservative checks do not prove that every player steering choice can recover.
+
 These choices supersede platformer movement in
 [ADR 0004](decisions/0004-drive-in-road-relative-coordinates.md). Tuning values are
 initial play-test values, not claims of final balance.
@@ -202,10 +219,54 @@ outstanding credits synchronously.
 `SqliteStore` keeps `profiles.sqlite3` in `$CAR_DRIVE_DATA_DIR` or in
 `car-drive` under the platform data directory (for example
 `~/.local/share/car-drive` on Linux). It opens lazily, initialises an empty file
-to schema 1 and refuses other files without writing to them. A credit inserts its
+to schema 2, migrates schema 1, and refuses foreign or newer files without writing
+to them. A credit inserts its
 run id and updates the balance in one transaction; a repeated run id changes
 nothing. Stored data is validated again on load. See
 [ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md).
+
+## Garage and private shared marketplace
+
+After the profile loads, the garage opens before the first drive. A schema-2
+garage row records the once-only starter Corsa and active vehicle. Model-specific
+parameters, color, tires, two motor stages and a carbon kit persist per vehicle.
+Bought equipment can be switched off and back on without paying again. Integer
+catalogue prices and upgrade rules live in `vehicles.rs` and remain fixed at
+catalogue version 1. Repeated equipment changes recompute from base tuning.
+
+`ProfileStore::garage` exchanges versioned requests and confirmed snapshots.
+SQLite implementation lives under `storage/sqlite/`. One `IMMEDIATE` transaction
+debits/credits coins, transfers ownership and records the request ID. An exact
+retry does not mutate twice. The marketplace guarantees immediate buyback, then
+holds that vehicle until someone buys it; there is no second seller payout.
+The garage cannot sell the last or active vehicle. Market listings are paged in
+groups of twenty. Pending writes and credits block further purchases and drive
+starts; uncertain transport results retain their original request ID for retry.
+See [ADR 0008](decisions/0008-transact-vehicle-ownership-and-tuning.md).
+
+`--market-server` runs a separate private service; `--market-provision` creates
+operator-approved credentials. `CAR_DRIVE_MARKET_CONFIG` selects a network store
+instead of a local save. Each database has a local/market realm marker to prevent
+cross-use. The service authenticates tokens, binds only loopback and requires an
+SSH tunnel for another machine. No public service is deployed. It serializes
+authenticated operations and uses the same atomic garage implementation.
+
+Online drives begin with a server-issued seed and vehicle snapshot. At 64 Hz the
+client records quantized steering and boost, then submits those inputs on game
+over, R/Select, or exit. The server replays the real `SimulationPlugin` to calculate
+coins, checks elapsed server time and credits each ticket exactly once. No client
+score or local balance is accepted. Garage mutations are locked until the ticket
+finishes. A new client login abandons an older unfinished ticket. Online drives
+end after twenty minutes to bound memory and verification time. Local drives
+keep their original restart behavior and have no recording limit. See
+[ADR 0009](decisions/0009-verify-drives-in-a-private-market-service.md) and the
+[operator guide](../marketplace.md).
+
+Additional tests cover all catalogue models and tuning, replay parity, actual
+collision dimensions, garage pause/confirm/start flow, schema migration, realm
+separation, once-only grants, pricing, retries, concurrent buyers and authenticated
+TCP ownership transfers. A physical-controller and two-machine SSH test remain
+outside automated coverage.
 
 ## Validation and conventions
 

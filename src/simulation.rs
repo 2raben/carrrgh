@@ -9,6 +9,7 @@ pub struct SimulationPlugin;
 impl Plugin for SimulationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<player::PlayerTuning>()
+            .init_resource::<crate::drive_proof::Recording>()
             .init_resource::<player::Controls>()
             .init_resource::<run::Run>()
             .init_resource::<level::TrafficFlow>()
@@ -20,7 +21,9 @@ impl Plugin for SimulationPlugin {
                 (
                     run::report_abandoned_run,
                     run::restart_run,
+                    crate::drive_proof::prepare_recording,
                     (
+                        crate::drive_proof::record_controls,
                         run::advance_run,
                         player::step_player,
                         level::spawn_traffic,
@@ -31,6 +34,7 @@ impl Plugin for SimulationPlugin {
                         pickups::collect_pickups,
                         run::collide,
                         level::remove_offscreen,
+                        crate::drive_proof::limit_online_drive,
                     )
                         .chain()
                         .run_if(run::driving),

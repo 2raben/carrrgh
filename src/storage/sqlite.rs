@@ -11,13 +11,17 @@ use bevy::tasks::{BoxedFuture, IoTaskPool};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 
 use super::{PlayerName, Profile, ProfileId, ProfileStore, RunCredit, StoreError, StoreResult};
+use crate::vehicles::{GarageRequest, GarageSnapshot};
+
+mod garage;
+mod market;
 
 /// Overrides the save directory, for development and play tests.
 pub const DATA_DIR_ENV: &str = "CAR_DRIVE_DATA_DIR";
 const FILE_NAME: &str = "profiles.sqlite3";
 /// Marks the file as a Car Drive save ("CarD").
 const APPLICATION_ID: i32 = 0x4361_7244;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = "
     CREATE TABLE profiles (
@@ -34,6 +38,7 @@ const SCHEMA_V1: &str = "
 
 #[derive(Clone)]
 pub struct SqliteStore {
+    market: bool,
     path: Option<Arc<PathBuf>>,
     connection: Arc<Mutex<Option<Connection>>>,
 }
@@ -42,8 +47,17 @@ impl SqliteStore {
     /// Without a path, every operation reports storage as unavailable.
     pub fn new(path: Option<PathBuf>) -> Self {
         Self {
+            market: false,
             path: path.map(Arc::new),
             connection: Arc::default(),
+        }
+    }
+
+    /// Authoritative market files cannot be opened by the local game backend.
+    pub fn new_market(path: PathBuf) -> Self {
+        Self {
+            market: true,
+            ..Self::new(Some(path))
         }
     }
 
@@ -56,7 +70,7 @@ impl SqliteStore {
     }
 
     /// Runs blocking work on the I/O pool, or when polled if no pool exists.
-    fn run<T: Send + 'static>(
+    pub(crate) fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> StoreResult<T> + Send + 'static,
     ) -> BoxedFuture<'static, StoreResult<T>> {
@@ -93,10 +107,51 @@ impl SqliteStore {
             std::fs::create_dir_all(dir)
                 .map_err(|error| StoreError::Unavailable(error.to_string()))?;
         }
+        #[cfg(unix)]
+        if self.market {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| StoreError::Unavailable(e.to_string()))?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| StoreError::Unavailable(e.to_string()))?;
+        }
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         migrate(&mut connection)?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let expected = if self.market { "market" } else { "local" };
+        let realm: Option<String> = tx
+            .query_row(
+                "SELECT realm FROM save_realm WHERE singleton = 1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match realm {
+            Some(realm) if realm != expected => {
+                return Err(StoreError::Invalid(
+                    "Local and market saves must stay separate".into(),
+                ));
+            }
+            None => {
+                let count: i64 = tx.query_row("SELECT count(*) FROM profiles", [], |r| r.get(0))?;
+                if self.market && count > 0 {
+                    return Err(StoreError::Invalid(
+                        "Cannot import a local save into the market".into(),
+                    ));
+                }
+                tx.execute("INSERT INTO save_realm VALUES (1, ?1)", [expected])?;
+            }
+            _ => {}
+        }
+        tx.commit()?;
         Ok(connection)
     }
 }
@@ -117,7 +172,7 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
             }
             transaction.execute_batch(SCHEMA_V1)?;
             transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            transaction.pragma_update(None, "user_version", 1)?;
         }
         transaction.commit()?;
     }
@@ -125,7 +180,15 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
     if application != APPLICATION_ID {
         return Err(StoreError::Invalid("not a Car Drive save".into()));
     }
-    // Later schema versions add numbered steps here, one version at a time.
+    if version == 1 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if header(&transaction)?.0 == 1 {
+            transaction.execute_batch(garage::SCHEMA_V2)?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+        transaction.commit()?;
+        return Ok(());
+    }
     match version {
         SCHEMA_VERSION => Ok(()),
         found if found > SCHEMA_VERSION => Err(StoreError::NewerSchema {
@@ -158,6 +221,13 @@ fn profile(id: String, name: String, coins: i64) -> StoreResult<Profile> {
 }
 
 impl ProfileStore for SqliteStore {
+    fn garage(
+        &self,
+        profile: ProfileId,
+        request: GarageRequest,
+    ) -> BoxedFuture<'static, StoreResult<GarageSnapshot>> {
+        self.run(move |connection| garage::transact(connection, &profile, &request))
+    }
     fn load(&self) -> BoxedFuture<'static, StoreResult<Option<Profile>>> {
         self.run(|connection| {
             connection
@@ -281,6 +351,7 @@ mod tests {
             run: RunId(run.into()),
             profile: profile.id.clone(),
             coins,
+            proof: None,
         }
     }
 
@@ -356,6 +427,18 @@ mod tests {
     }
 
     #[test]
+    fn local_and_authoritative_market_files_cannot_be_interchanged() {
+        let dir = TempDir::new();
+        let local = SqliteStore::new(Some(dir.file()));
+        block_on(local.create(name("Local"))).unwrap();
+        assert!(block_on(SqliteStore::new_market(dir.file()).load()).is_err());
+        let path = dir.0.join("market.sqlite3");
+        let market = SqliteStore::new_market(path.clone());
+        block_on(market.provision(name("Online"), 0)).unwrap();
+        assert!(block_on(SqliteStore::new(Some(path)).load()).is_err());
+    }
+
+    #[test]
     fn foreign_or_newer_files_are_refused_unchanged() {
         let dir = TempDir::new();
         let newer = dir.0.join("newer.sqlite3");
@@ -364,7 +447,7 @@ mod tests {
         connection
             .pragma_update(None, "application_id", APPLICATION_ID)
             .unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
         drop(connection);
         let foreign = dir.0.join("foreign.sqlite3");
         Connection::open(&foreign)
@@ -378,8 +461,8 @@ mod tests {
             (
                 newer,
                 StoreError::NewerSchema {
-                    found: 2,
-                    supported: 1,
+                    found: 3,
+                    supported: 2,
                 },
             ),
             (foreign, StoreError::Invalid("not a Car Drive save".into())),

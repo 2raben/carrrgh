@@ -1,8 +1,9 @@
 //! Procedural car and pickup sprites, scrolling lane marks, and render interpolation.
-use crate::level::{CAR_SIZE, ROAD_HALF_WIDTH, Traffic, VehicleKind};
+use crate::level::{ROAD_HALF_WIDTH, Traffic, VehicleKind};
 use crate::pickups::{PICKUP_SIZE, Pickup};
 use crate::player::{Player, Position, PreviousPosition};
 use crate::run::Run;
+use crate::vehicles::ActiveVehicle;
 use bevy::prelude::*;
 
 pub mod palette {
@@ -37,7 +38,7 @@ impl Plugin for VisualsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClearColor(Color::srgb(0.09, 0.16, 0.14)))
             .add_systems(Startup, draw_road)
-            .add_systems(Update, (decorate_cars, decorate_pickups))
+            .add_systems(Update, (decorate_cars, decorate_pickups, decorate_player))
             .add_systems(
                 PostUpdate,
                 (
@@ -98,26 +99,14 @@ fn draw_road(mut commands: Commands) {
     }
 }
 
-type NewCars<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Entity,
-        &'static Position,
-        Option<&'static Traffic>,
-        Has<Player>,
-    ),
-    Or<(Added<Player>, Added<Traffic>)>,
->;
+type NewCars<'w, 's> = Query<'w, 's, (Entity, &'static Position, &'static Traffic), Added<Traffic>>;
 
 fn decorate_cars(mut commands: Commands, cars: NewCars) {
-    for (entity, position, traffic, player) in &cars {
-        let oncoming = traffic.is_some_and(|car| car.speed < 0.0);
-        let truck = traffic.is_some_and(|car| car.kind == VehicleKind::Truck);
-        let size = traffic.map_or(CAR_SIZE, |car| car.kind.size());
-        let color = if player {
-            palette::BLUE
-        } else if oncoming {
+    for (entity, position, traffic) in &cars {
+        let oncoming = traffic.speed < 0.0;
+        let truck = traffic.kind == VehicleKind::Truck;
+        let size = traffic.kind.size();
+        let color = if oncoming {
             Color::srgb(0.94, 0.38, 0.30)
         } else {
             Color::srgb(0.82, 0.85, 0.78)
@@ -137,38 +126,6 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
                     Vec2::new(4.0, -4.0),
                     -0.2,
                 ));
-                if player {
-                    body.spawn((
-                        Effect::Shield,
-                        sprite(
-                            palette::SHIELD.with_alpha(0.35),
-                            CAR_SIZE + Vec2::splat(30.0),
-                            Vec2::ZERO,
-                            -0.15,
-                        ),
-                        Visibility::Hidden,
-                    ));
-                    body.spawn((
-                        Effect::Protection,
-                        sprite(
-                            palette::PROTECTION,
-                            CAR_SIZE + Vec2::splat(12.0),
-                            Vec2::ZERO,
-                            -0.1,
-                        ),
-                        Visibility::Hidden,
-                    ));
-                    body.spawn((
-                        Effect::Exhaust,
-                        sprite(
-                            Color::srgb(0.5, 0.9, 1.0),
-                            Vec2::new(22.0, 35.0),
-                            Vec2::new(0.0, -49.0),
-                            -0.1,
-                        ),
-                        Visibility::Hidden,
-                    ));
-                }
                 for side in [-1.0, 1.0] {
                     for end in [-1.0, 1.0] {
                         body.spawn(sprite(
@@ -223,25 +180,21 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
                         Vec2::new(x, -size.y * 0.5 + 3.0),
                         0.2,
                     ));
-                    if !player {
-                        for end in [-1.0, 1.0] {
-                            body.spawn((
-                                TurnSignal {
-                                    vehicle: entity,
-                                    side: if oncoming { -side } else { side },
-                                },
-                                sprite(
-                                    Color::srgb(1.0, 0.62, 0.02),
-                                    Vec2::new(10.0, 10.0),
-                                    Vec2::new(
-                                        side * (size.x * 0.5 - 2.0),
-                                        end * (size.y * 0.5 - 11.0),
-                                    ),
-                                    0.4,
-                                ),
-                                Visibility::Hidden,
-                            ));
-                        }
+
+                    for end in [-1.0, 1.0] {
+                        body.spawn((
+                            TurnSignal {
+                                vehicle: entity,
+                                side: if oncoming { -side } else { side },
+                            },
+                            sprite(
+                                Color::srgb(1.0, 0.62, 0.02),
+                                Vec2::new(10.0, 10.0),
+                                Vec2::new(side * (size.x * 0.5 - 2.0), end * (size.y * 0.5 - 11.0)),
+                                0.4,
+                            ),
+                            Visibility::Hidden,
+                        ));
                     }
                 }
             });
@@ -358,5 +311,64 @@ fn show_effects(run: Res<Run>, mut effects: Query<(&Effect, &mut Visibility, &mu
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+fn decorate_player(
+    mut commands: Commands,
+    active: Res<ActiveVehicle>,
+    players: Query<(Entity, &Position), With<Player>>,
+    mut drawn: Local<bool>,
+) {
+    if *drawn && !active.is_changed() {
+        return;
+    }
+    for (entity, at) in &players {
+        let size = active.0.model.size();
+        commands
+            .entity(entity)
+            .despawn_children()
+            .insert((
+                Transform::from_translation(at.0.extend(2.)),
+                Visibility::default(),
+            ))
+            .with_children(|body| {
+                body.spawn(sprite(
+                    Color::srgba(0., 0., 0., 0.3),
+                    size + Vec2::splat(5.),
+                    Vec2::new(4., -4.),
+                    -0.2,
+                ));
+                for (effect, color, dimensions, offset) in [
+                    (
+                        Effect::Shield,
+                        palette::SHIELD.with_alpha(0.35),
+                        size + Vec2::splat(30.),
+                        Vec2::ZERO,
+                    ),
+                    (
+                        Effect::Protection,
+                        palette::PROTECTION,
+                        size + Vec2::splat(12.),
+                        Vec2::ZERO,
+                    ),
+                    (
+                        Effect::Exhaust,
+                        palette::BLUE,
+                        Vec2::new(18., 35.),
+                        Vec2::new(0., -size.y * 0.5 - 12.),
+                    ),
+                ] {
+                    body.spawn((
+                        effect,
+                        sprite(color, dimensions, offset, -0.1),
+                        Visibility::Hidden,
+                    ));
+                }
+                for (i, part) in crate::vehicle_art::parts(&active.0).into_iter().enumerate() {
+                    body.spawn(sprite(part.color, part.size, part.at, 0.01 * i as f32));
+                }
+            });
+        *drawn = true;
     }
 }

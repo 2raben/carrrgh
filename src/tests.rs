@@ -959,3 +959,211 @@ fn sqlite_profile_and_coins_survive_restarting_the_game() {
     assert_eq!(profile.name.as_str(), "Ada");
     assert_eq!(profile.coins, 43);
 }
+
+#[test]
+fn every_vehicle_uses_its_actual_collision_box_and_road_limits() {
+    use crate::vehicles::{MODELS, Vehicle};
+    for model in MODELS {
+        let mut sim = Sim::new();
+        sim.quiet();
+        let tuning = Vehicle::new("test".into(), model).tuning();
+        sim.0.world_mut().insert_resource(tuning);
+        sim.controls().move_x = 1.;
+        sim.steps(100);
+        assert_eq!(
+            sim.position().x,
+            ROAD_HALF_WIDTH - tuning.size.x * 0.5,
+            "{}",
+            model.name()
+        );
+        sim.controls().move_x = 0.;
+        let at = sim.position();
+        let half = (tuning.size.x + CAR_SIZE.x) * 0.5;
+        sim.car(at - Vec2::new(half - 1., 0.), 300.);
+        sim.steps(1);
+        assert_eq!(sim.run().lives, 2, "{}", model.name());
+    }
+}
+
+#[test]
+fn garage_pauses_simulation_and_applies_only_confirmed_vehicle_changes() {
+    use crate::garage::{Garage, GaragePlugin, Intent};
+    use crate::vehicles::{GarageAction, Model};
+    let dir = TempDir::new();
+    let store = SqliteStore::new(Some(dir.file()));
+    let p = bevy::tasks::block_on(store.create(crate::storage::PlayerName::parse("Ada").unwrap()))
+        .unwrap();
+    bevy::tasks::block_on(store.credit(crate::storage::RunCredit {
+        run: crate::storage::RunId::random(),
+        profile: p.id,
+        coins: 100,
+        proof: None,
+    }))
+    .unwrap();
+    let mut app = App::new();
+    app.add_plugins((
+        ProfilePlugin {
+            store: Arc::new(store),
+        },
+        GaragePlugin,
+    ));
+    let mut sim = Sim::build(app);
+    sim.until("garage", |s| {
+        s.0.world().resource::<Garage>().data.is_some()
+    });
+    sim.steps(10);
+    assert_eq!(sim.run().distance, 0.);
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Action(GarageAction::Buy(Model::BobbyCar)));
+    sim.steps(1);
+    assert_eq!(sim.balance(), Some(100));
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Confirm);
+    sim.until("purchase", |s| s.balance() == Some(45));
+    let data = sim.0.world().resource::<Garage>().data.as_ref().unwrap();
+    let car = data
+        .vehicles
+        .iter()
+        .find(|v| v.model == Model::BobbyCar)
+        .unwrap()
+        .id
+        .clone();
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Action(GarageAction::Select(car.clone())));
+    sim.steps(1);
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Confirm);
+    sim.until("selection", |s| {
+        s.0.world()
+            .resource::<Garage>()
+            .data
+            .as_ref()
+            .unwrap()
+            .active
+            == car
+    });
+    assert_eq!(
+        sim.0.world().resource::<PlayerTuning>().size,
+        Model::BobbyCar.size()
+    );
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Start);
+    sim.until("start", |s| s.run().distance > 0.);
+    assert_eq!(sim.balance(), Some(45));
+    sim.0
+        .world_mut()
+        .resource_mut::<Garage>()
+        .enqueue(Intent::Action(GarageAction::Buy(Model::BobbyCar)));
+    sim.steps(3);
+    assert!(sim.0.world().resource::<Garage>().confirmation.is_none());
+}
+
+#[test]
+fn online_garage_start_does_not_credit_an_empty_or_previous_ticket() {
+    use crate::drive_proof::{DriveTicket, verify};
+    use crate::garage::{Garage, GaragePlugin, Intent};
+    use crate::storage::{PlayerName, Profile, ProfileId, RunCredit, StoreResult};
+    use crate::vehicles::{GarageRequest, GarageSnapshot, Model, Vehicle};
+    use bevy::tasks::{BoxedFuture, block_on};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Clone)]
+    struct ProofStore {
+        inner: SqliteStore,
+        credited: Arc<AtomicUsize>,
+    }
+    impl ProfileStore for ProofStore {
+        fn online(&self) -> bool {
+            true
+        }
+        fn load(&self) -> BoxedFuture<'static, StoreResult<Option<Profile>>> {
+            self.inner.load()
+        }
+        fn create(&self, n: PlayerName) -> BoxedFuture<'static, StoreResult<Profile>> {
+            self.inner.create(n)
+        }
+        fn garage(
+            &self,
+            p: ProfileId,
+            r: GarageRequest,
+        ) -> BoxedFuture<'static, StoreResult<GarageSnapshot>> {
+            self.inner.garage(p, r)
+        }
+        fn begin_drive(
+            &self,
+            id: String,
+        ) -> BoxedFuture<'static, StoreResult<Option<DriveTicket>>> {
+            Box::pin(async move {
+                Ok(Some(DriveTicket {
+                    id,
+                    seed: 54,
+                    vehicle: Vehicle::new("test".into(), Model::Corsa),
+                }))
+            })
+        }
+        fn credit(&self, c: RunCredit) -> BoxedFuture<'static, StoreResult<Profile>> {
+            let proof = c.proof.as_ref().expect("online credit must include inputs");
+            assert!(
+                !proof.frames.is_empty(),
+                "starting a ticket must not immediately submit it"
+            );
+            let ticket = DriveTicket {
+                id: proof.ticket.clone(),
+                seed: 54,
+                vehicle: Vehicle::new("test".into(), Model::Corsa),
+            };
+            assert_eq!(verify(&ticket, proof).unwrap(), c.coins);
+            self.credited.fetch_add(1, Ordering::SeqCst);
+            self.inner.credit(c)
+        }
+    }
+    let dir = TempDir::new();
+    let inner = SqliteStore::new(Some(dir.file()));
+    block_on(inner.create(PlayerName::parse("Online").unwrap())).unwrap();
+    let credited = Arc::new(AtomicUsize::new(0));
+    let mut app = App::new();
+    app.add_plugins((
+        ProfilePlugin {
+            store: Arc::new(ProofStore {
+                inner,
+                credited: credited.clone(),
+            }),
+        },
+        GaragePlugin,
+    ));
+    let mut sim = Sim::build(app);
+    sim.until("garage", |s| {
+        s.0.world().resource::<Garage>().data.is_some()
+    });
+    for expected in 1..=2 {
+        sim.0
+            .world_mut()
+            .resource_mut::<Garage>()
+            .enqueue(Intent::Start);
+        sim.until("drive started", |s| {
+            !s.0.world().resource::<Garage>().open && s.run().distance > 0. && !s.run().finished
+        });
+        assert_eq!(credited.load(Ordering::SeqCst), expected - 1);
+        sim.steps(64);
+        sim.controls().end_drive = true;
+        sim.until("verified credit", |s| {
+            s.run().finished && !s.account().saving() && credited.load(Ordering::SeqCst) == expected
+        });
+        sim.0
+            .world_mut()
+            .resource_mut::<Garage>()
+            .enqueue(Intent::Open);
+        sim.until("garage reopened", |s| {
+            s.0.world().resource::<Garage>().open && !s.0.world().resource::<Garage>().busy()
+        });
+    }
+}

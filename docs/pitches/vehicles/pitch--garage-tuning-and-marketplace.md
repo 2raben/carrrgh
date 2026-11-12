@@ -10,8 +10,15 @@ anderes Modell umsteigt, soll sein bisheriges Auto samt Tuning verkaufen können
 Ein Handelsplatz soll diese Fahrzeuge anderen Spielern anbieten, ohne dass
 Verkäufer Preise aushandeln oder auf eine Auszahlung warten müssen.
 
-**Status: vorgeschlagen.** Baut auf Coins und Spielerprofil auf. Garage, Tuning
-und Handelsplatz sind neue Arbeit, keine bereits implementierten Funktionen.
+**Status: als spielbares Experiment umgesetzt.** Lokale Garage, zehn Fahrzeuge,
+Tuning und garantierter Sofortankauf sind implementiert. Ein privater gemeinsamer
+Testmarkt verwendet provisionierte Konten und serverseitig nachgespielte Fahrten;
+Zugriff von einem zweiten Rechner erfolgt über einen SSH-Tunnel. Öffentlicher
+Betrieb ist nicht enthalten. Einrichtung und Grenzen stehen in der
+[Marktplatz-Anleitung](../../marketplace.md), die Umsetzung in
+[ADR 0008](../../architecture/decisions/0008-transact-vehicle-ownership-and-tuning.md)
+und [ADR 0009](../../architecture/decisions/0009-verify-drives-in-a-private-market-service.md).
+Die folgenden Abschnitte bewahren den Entwurf und seine Spieltestwerte.
 
 # Solution
 
