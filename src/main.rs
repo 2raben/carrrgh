@@ -1,6 +1,7 @@
 //! Car Drive: steer through traffic, manage boost, and drive as far as possible.
 
 mod camera;
+mod difficulty;
 mod drive_proof;
 mod garage;
 mod garage_ui;

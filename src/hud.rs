@@ -209,11 +209,7 @@ fn show_run(
     mut shield: Query<&mut BackgroundColor, With<ShieldIcon>>,
 ) {
     for mut text in &mut progress {
-        text.0 = format!(
-            "{:06.0} m\nLEVEL {} / 10",
-            run.metres(),
-            run.difficulty_step() + 1
-        );
+        text.0 = format!("{:06.0} m\nLEVEL {}", run.metres(), run.level());
     }
     for mut node in &mut bars {
         node.width = Val::Percent(run.energy * 100.0);

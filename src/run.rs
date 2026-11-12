@@ -1,6 +1,7 @@
 //! Boost, distance, swept collisions, coins, and the lifecycle of a drive.
 use bevy::prelude::*;
 
+use crate::difficulty::Difficulty;
 use crate::level::{OnRoad, PLAYER_START, Traffic, TrafficFlow};
 use crate::pickups::PickupFlow;
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
@@ -78,19 +79,13 @@ impl Run {
         }
     }
 
-    /// Ten world units per metre; cap progression to preserve reaction time.
-    pub fn difficulty_step(&self) -> usize {
-        (self.distance / 10_000.0).floor().clamp(0.0, 9.0) as usize
+    /// One level per 1,000 metres (ten world units per metre), without a cap.
+    pub fn level(&self) -> u32 {
+        ((self.distance / 10_000.0).floor().max(0.0) as u32).saturating_add(1)
     }
 
-    pub fn truck_chance(&self) -> f32 {
-        if self.distance < 40_000.0 {
-            0.0
-        } else if self.distance < 70_000.0 {
-            0.2
-        } else {
-            0.35
-        }
+    pub fn difficulty(&self) -> Difficulty {
+        Difficulty::at(self.level())
     }
 }
 
@@ -176,7 +171,7 @@ pub fn advance_run(
     } else {
         run.energy = (run.energy + tuning.boost_recharge * dt).min(1.0);
     }
-    let speed_multiplier = 1.0 + 0.05 * run.difficulty_step() as f32;
+    let speed_multiplier = run.difficulty().speed_multiplier;
     run.speed = (tuning.cruise_speed
         + (tuning.boost_speed - tuning.cruise_speed) * boosted_fraction)
         * speed_multiplier;

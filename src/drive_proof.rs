@@ -46,8 +46,11 @@ pub fn prepare_recording(
         return;
     }
     if let Some(ticket) = &recording.ticket {
-        traffic.rng = fastrand::Rng::with_seed(ticket.seed);
-        traffic.cooldown = 0.;
+        *traffic = TrafficFlow {
+            cooldown: 0.,
+            rng: fastrand::Rng::with_seed(ticket.seed),
+            ..default()
+        };
         *pickups = PickupFlow::with_seed(ticket.seed ^ 0x7472_6166_6669_6301);
     }
     recording.frames.clear();
@@ -83,6 +86,7 @@ pub fn verify(ticket: &DriveTicket, proof: &DriveProof) -> Result<u64, String> {
         .insert_resource(TrafficFlow {
             cooldown: 0.,
             rng: fastrand::Rng::with_seed(ticket.seed),
+            ..default()
         })
         .insert_resource(PickupFlow::with_seed(ticket.seed ^ 0x7472_6166_6669_6301));
     app.finish();

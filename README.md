@@ -52,7 +52,9 @@ In shared-market mode R/Select submits the current drive; start the next one
 from the garage. Online runs end after 20 minutes.
 
 Release boost to recharge. If the tank empties, release before boosting again.
-Every 1,000 metres, traffic becomes denser and your speed increases, up to ten levels.
+Every 1,000 metres a new level begins, without an end: your speed increases up to
+level ten, and traffic keeps getting denser. Later, lanes carry both directions and
+oncoming cars swerve around slower traffic.
 Restart resets difficulty and generates fresh traffic. Distance records are not saved. Movement values and traffic
 patterns are initial play-test values.
 

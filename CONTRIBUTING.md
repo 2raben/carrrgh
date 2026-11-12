@@ -94,7 +94,10 @@ Check the affected behavior manually in Car Drive:
   intended side before and during adjacent lane changes, including oncoming cars.
   Waiting on a lane marking must no longer be a safe strategy. Changes must not
   overlap other traffic or close a pickup's reserved clearance.
-- The HUD advances a level every 1,000 metres, capped at level 10. From 4,000 metres,
+- The HUD advances a level every 1,000 metres without a cap; speed stops rising
+  at level 10 while traffic keeps getting denser. From level 3, lanes carry both
+  directions; from level 6, watch oncoming cars blink briefly and swerve out of a
+  same-direction car's lane in front of the player. From 4,000 metres,
   check visibly wider, longer trucks, their cargo beds and matching collision boxes.
   Truck lane changes should be slower. Game over freezes signals; restart returns
   to level 1 with no trucks or old lane-change state.
