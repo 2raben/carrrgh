@@ -31,12 +31,11 @@ fn sample_controls(
     let any_key_just = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied());
     const LEFT: &[KeyCode] = &[KeyCode::KeyA, KeyCode::ArrowLeft];
     const RIGHT: &[KeyCode] = &[KeyCode::KeyD, KeyCode::ArrowRight];
-    const JUMP: &[KeyCode] = &[KeyCode::Space, KeyCode::KeyW, KeyCode::ArrowUp];
+    const BOOST: &[KeyCode] = &[KeyCode::Space];
     const RESTART: &[KeyCode] = &[KeyCode::KeyR, KeyCode::Backspace];
 
     let mut move_x = f32::from(u8::from(any_key(RIGHT))) - f32::from(u8::from(any_key(LEFT)));
-    let mut jump_held = any_key(JUMP);
-    let mut jump_pressed = any_key_just(JUMP);
+    let mut boost = any_key(BOOST);
     let mut restart = any_key_just(RESTART);
     for pad in &gamepads {
         let stick = pad.left_stick().x;
@@ -44,21 +43,19 @@ fn sample_controls(
             move_x += stick;
         }
         move_x += pad.dpad().x;
-        jump_held |= pad.pressed(GamepadButton::South);
-        jump_pressed |= pad.just_pressed(GamepadButton::South);
+        boost |= pad.pressed(GamepadButton::South);
         restart |= pad.just_pressed(GamepadButton::Select);
     }
 
-    // After the goal, only Restart is accepted.
+    // After the drive ends, only Restart is accepted.
     let playing = !run.finished;
     controls.move_x = if playing {
         move_x.clamp(-1.0, 1.0)
     } else {
         0.0
     };
-    controls.jump_held = playing && jump_held;
+    controls.boost = playing && boost;
     // Latch presses until a fixed step consumes them.
-    controls.jump_pressed |= playing && jump_pressed;
     controls.restart |= restart;
 }
 

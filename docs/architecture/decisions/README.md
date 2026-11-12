@@ -31,7 +31,7 @@ does not prove correctness.
 
 ## Starting a project from the template
 
-The records below describe the starter game. Keep the ones that still hold for
+The records preserve the starter history and the Car Drive replacement. Keep the ones that still hold for
 your project. When you replace a choice, for example by adopting a physics engine,
 write a new record that supersedes the old one instead of deleting it.
 
@@ -39,6 +39,8 @@ write a new record that supersedes the old one instead of deleting it.
 
 | Record | Status |
 | --- | --- |
-| [0001 — Move the player with hand-written kinematics on a fixed timestep](0001-move-the-player-with-hand-written-kinematics.md) | accepted |
+| [0001 — Move the player with hand-written kinematics on a fixed timestep](0001-move-the-player-with-hand-written-kinematics.md) | superseded by 0004 |
 | [0002 — Keep the simulation headless behind a `Controls` resource](0002-keep-the-simulation-headless-behind-a-controls-resource.md) | accepted |
 | [0003 — Pin the toolchain and run project tasks with mise](0003-run-project-tasks-with-mise.md) | accepted |
+| [0004 — Drive in road-relative coordinates with swept collisions](0004-drive-in-road-relative-coordinates.md) | accepted |
+| [0005 — Spawn continuous random traffic with predictive spacing checks](0005-spawn-continuous-random-traffic.md) | accepted; amends 0004 |

@@ -1,178 +1,128 @@
-//! The level: a tile map parsed into solid rectangles, a start, a goal, and coins.
-//!
-//! The map is plain text so a level can be edited without tooling. Parsing is pure
-//! and has no Bevy systems, so it is tested directly.
-
+//! Road geometry and continuous random traffic; no rendering or device input.
 use bevy::prelude::*;
 
-/// The side of one map tile, in world units.
-pub const TILE: f32 = 32.0;
+use crate::player::{PlayerTuning, Position, PreviousPosition};
+use crate::run::Run;
 
-/// The starter level. Each row is one tile high; the first row is the top.
-///
-/// - `#` solid ground or wall
-/// - `P` player start (exactly one)
-/// - `G` goal flag (exactly one)
-/// - `o` coin
-/// - `.` or space: empty
-pub const STARTER_MAP: &[&str] = &[
-    "............................................................",
-    "............................................................",
-    "............................................................",
-    "............................................................",
-    "............................oooo...............oo...........",
-    "..........ooo...............####..##........................",
-    "....................##............##......................G.",
-    "..P...............####............##...o.o.o.............###",
-    "##########...#########...#####################....##########",
-    "##########...#########...#####################....##########",
-];
+pub const ROAD_HALF_WIDTH: f32 = 210.0;
+pub const LANES: [f32; 3] = [-140.0, 0.0, 140.0];
+pub const CAR_SIZE: Vec2 = Vec2::new(44.0, 78.0);
+pub const PLAYER_START: Vec2 = Vec2::new(140.0, -230.0);
+pub const SPAWN_Y: f32 = 480.0;
+pub const DESPAWN_Y: f32 = -470.0;
+pub const TRAFFIC_SPACING: f32 = 180.0;
+pub const ESCAPE_SPACING: f32 = 360.0;
 
-/// A parsed level, in world units with the origin at the map's bottom-left.
-#[derive(Resource, Clone, Debug)]
-pub struct Level {
-    /// Solid tiles merged into horizontal runs.
-    pub solids: Vec<Rect>,
-    /// Where the player's feet start: the centre-bottom of the `P` tile.
-    pub start: Vec2,
-    /// The goal tile; touching it finishes the run.
-    pub goal: Rect,
-    /// Centres of the coins.
-    pub coins: Vec<Vec2>,
-    /// The area covered by the map.
-    pub bounds: Rect,
+/// Positive speed travels in the player's direction; negative is oncoming.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Traffic {
+    pub speed: f32,
+    pub hit: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum LevelError {
-    Empty,
-    UnknownTile {
-        row: usize,
-        column: usize,
-        tile: char,
-    },
-    MissingStart,
-    MissingGoal,
-    DuplicateStart,
-    DuplicateGoal,
+#[derive(Resource, Default)]
+pub struct TrafficFlow {
+    pub cooldown: f32,
+    pub rng: fastrand::Rng,
 }
 
-impl Level {
-    pub fn parse(rows: &[&str]) -> Result<Self, LevelError> {
-        let height = rows.len();
-        let width = rows
+/// Whether three cars can pack all lanes into a short longitudinal band.
+/// Relative car spacing is independent of player speed. The initial cruise
+/// speed gives the longest remaining lifetime, including later boost releases.
+pub fn blocks_all_lanes(cars: [(Vec2, f32); 3], cruise_speed: f32) -> bool {
+    if cars[0].0.x == cars[1].0.x || cars[0].0.x == cars[2].0.x || cars[1].0.x == cars[2].0.x {
+        return false;
+    }
+    let mut from = 0.0_f32;
+    let mut until = cars
+        .iter()
+        .map(|(at, speed)| (at.y - DESPAWN_Y).max(0.0) / (cruise_speed - speed))
+        .fold(f32::INFINITY, f32::min);
+    // Intersect the time intervals when each pair is within ESCAPE_SPACING.
+    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+        let gap = cars[a].0.y - cars[b].0.y;
+        let relative_speed = cars[a].1 - cars[b].1;
+        if relative_speed == 0.0 {
+            if gap.abs() > ESCAPE_SPACING {
+                return false;
+            }
+        } else {
+            let first = (-ESCAPE_SPACING - gap) / relative_speed;
+            let last = (ESCAPE_SPACING - gap) / relative_speed;
+            from = from.max(first.min(last));
+            until = until.min(first.max(last));
+        }
+        if from > until {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn spawn_traffic(
+    mut commands: Commands,
+    time: Res<Time>,
+    run: Res<Run>,
+    tuning: Res<PlayerTuning>,
+    mut flow: ResMut<TrafficFlow>,
+    traffic: Query<(&Traffic, &Position)>,
+) {
+    flow.cooldown -= time.delta_secs();
+    if flow.cooldown > 0.0 {
+        return;
+    }
+    let mut lanes = LANES;
+    flow.rng.shuffle(&mut lanes);
+    for x in lanes {
+        let at = Vec2::new(x, SPAWN_Y);
+        if traffic
             .iter()
-            .map(|row| row.chars().count())
-            .max()
-            .unwrap_or(0);
-        if height == 0 || width == 0 {
-            return Err(LevelError::Empty);
+            .any(|(_, p)| p.0.x == x && SPAWN_Y - p.0.y < TRAFFIC_SPACING)
+        {
+            continue;
         }
-        let tile_rect = |row: usize, column: usize| {
-            let min = Vec2::new(column as f32, (height - 1 - row) as f32) * TILE;
-            Rect::from_corners(min, min + Vec2::splat(TILE))
-        };
-
-        let mut solids = Vec::new();
-        let mut start = None;
-        let mut goal = None;
-        let mut coins = Vec::new();
-        for (row, line) in rows.iter().enumerate() {
-            let mut run: Option<Rect> = None;
-            for (column, tile) in line.chars().enumerate() {
-                let rect = tile_rect(row, column);
-                if tile == '#' {
-                    run = Some(run.map_or(rect, |run| run.union(rect)));
-                    continue;
-                }
-                solids.extend(run.take());
-                match tile {
-                    '.' | ' ' => {}
-                    'o' => coins.push(rect.center()),
-                    'P' if start.is_some() => return Err(LevelError::DuplicateStart),
-                    'P' => start = Some(Vec2::new(rect.center().x, rect.min.y)),
-                    'G' if goal.is_some() => return Err(LevelError::DuplicateGoal),
-                    'G' => goal = Some(rect),
-                    tile => return Err(LevelError::UnknownTile { row, column, tile }),
-                }
-            }
-            solids.extend(run);
+        // Cars already in a lane set its speed, preventing rear-end overlaps.
+        let speed = traffic
+            .iter()
+            .find(|(_, p)| p.0.x == x)
+            .map(|(car, _)| car.speed)
+            .unwrap_or_else(|| if flow.rng.bool() { 140.0 } else { -150.0 });
+        if traffic.iter_combinations::<2>().any(|[(a, pa), (b, pb)]| {
+            blocks_all_lanes(
+                [(at, speed), (pa.0, a.speed), (pb.0, b.speed)],
+                tuning.cruise_speed,
+            )
+        }) {
+            continue;
         }
-
-        Ok(Self {
-            solids,
-            start: start.ok_or(LevelError::MissingStart)?,
-            goal: goal.ok_or(LevelError::MissingGoal)?,
-            coins,
-            bounds: Rect::new(0.0, 0.0, width as f32 * TILE, height as f32 * TILE),
-        })
+        commands.spawn((
+            Name::new("Traffic"),
+            Traffic { speed, hit: false },
+            Position(at),
+            PreviousPosition(at),
+        ));
+        flow.cooldown = (1.2 + flow.rng.f32() * 0.8) / (1.0 + 0.15 * run.difficulty_step() as f32);
+        return;
     }
+    // Retry soon if every lane is unsafe; never emit a catch-up batch.
+    flow.cooldown = 0.1;
+}
 
-    pub fn starter() -> Self {
-        Self::parse(STARTER_MAP).expect("the starter map is valid")
-    }
-
-    /// Below this height the player has fallen out of the level.
-    pub fn fall_limit(&self) -> f32 {
-        self.bounds.min.y - 4.0 * TILE
+pub fn move_traffic(
+    time: Res<Time>,
+    run: Res<Run>,
+    mut traffic: Query<(&Traffic, &mut Position, &mut PreviousPosition)>,
+) {
+    for (car, mut position, mut previous) in &mut traffic {
+        previous.0 = position.0;
+        position.0.y += (car.speed - run.speed) * time.delta_secs();
     }
 }
 
-impl Default for Level {
-    fn default() -> Self {
-        Self::starter()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn starter_map_parses() {
-        let level = Level::starter();
-        assert!(!level.solids.is_empty());
-        assert!(!level.coins.is_empty());
-        assert!(level.bounds.contains(level.start));
-        assert!(level.bounds.contains(level.goal.center()));
-    }
-
-    #[test]
-    fn merges_solid_runs_and_flips_rows() {
-        let level = Level::parse(&["P..G", "##.#"]).unwrap();
-        assert_eq!(
-            level.solids,
-            vec![
-                Rect::new(0.0, 0.0, 2.0 * TILE, TILE),
-                Rect::new(3.0 * TILE, 0.0, 4.0 * TILE, TILE),
-            ]
-        );
-        assert_eq!(level.start, Vec2::new(0.5 * TILE, TILE));
-        assert_eq!(
-            level.goal,
-            Rect::new(3.0 * TILE, TILE, 4.0 * TILE, 2.0 * TILE)
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_maps() {
-        assert_eq!(Level::parse(&[]).unwrap_err(), LevelError::Empty);
-        assert_eq!(
-            Level::parse(&["..G"]).unwrap_err(),
-            LevelError::MissingStart
-        );
-        assert_eq!(Level::parse(&["P.."]).unwrap_err(), LevelError::MissingGoal);
-        assert_eq!(
-            Level::parse(&["PPG"]).unwrap_err(),
-            LevelError::DuplicateStart
-        );
-        assert_eq!(
-            Level::parse(&["P?G"]).unwrap_err(),
-            LevelError::UnknownTile {
-                row: 0,
-                column: 1,
-                tile: '?'
-            }
-        );
+pub fn remove_traffic(mut commands: Commands, traffic: Query<(Entity, &Position), With<Traffic>>) {
+    for (entity, position) in &traffic {
+        if position.0.y < DESPAWN_Y {
+            commands.entity(entity).despawn();
+        }
     }
 }

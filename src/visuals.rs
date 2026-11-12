@@ -1,52 +1,34 @@
-//! Drawing: coloured sprites for the level, goal, coins, and player, and
-//! interpolation of simulated positions into transforms.
-//!
-//! Simulation entities carry no sprites. This plugin decorates them when they
-//! appear, so the headless simulation never needs assets or a renderer.
-
+//! Procedural car sprites, scrolling lane marks, and render interpolation.
+use crate::level::{CAR_SIZE, ROAD_HALF_WIDTH, Traffic};
+use crate::player::{Player, Position, PreviousPosition};
+use crate::run::Run;
 use bevy::prelude::*;
-
-use crate::level::{Level, TILE};
-use crate::player::{Player, PlayerTuning, Position, PreviousPosition, Velocity};
-use crate::run::Coin;
 
 pub mod palette {
     use bevy::prelude::Color;
-
-    pub const SKY: Color = Color::srgb(0.53, 0.75, 0.92);
-    pub const GROUND: Color = Color::srgb(0.42, 0.29, 0.2);
-    pub const GRASS: Color = Color::srgb(0.36, 0.7, 0.3);
-    pub const PLAYER: Color = Color::srgb(0.93, 0.36, 0.3);
-    pub const EYE: Color = Color::srgb(0.1, 0.1, 0.14);
-    pub const COIN: Color = Color::srgb(0.99, 0.8, 0.2);
-    pub const POLE: Color = Color::srgb(0.9, 0.9, 0.92);
-    pub const FLAG: Color = Color::srgb(0.25, 0.55, 0.95);
-    pub const PANEL: Color = Color::srgba(0.05, 0.08, 0.12, 0.8);
-    pub const TEXT: Color = Color::srgb(0.95, 0.96, 0.98);
+    pub const PANEL: Color = Color::srgba(0.035, 0.055, 0.08, 0.95);
+    pub const TEXT: Color = Color::srgb(0.93, 0.95, 0.96);
+    pub const BLUE: Color = Color::srgb(0.22, 0.72, 0.95);
 }
 
-/// Draw order, back to front.
-mod layer {
-    pub const LEVEL: f32 = 0.0;
-    pub const GOAL: f32 = 1.0;
-    pub const COIN: f32 = 2.0;
-    pub const PLAYER: f32 = 3.0;
+#[derive(Component)]
+struct RoadMark(f32);
+#[derive(Component)]
+enum Effect {
+    Protection,
+    Exhaust,
 }
-
-const GRASS_DEPTH: f32 = 6.0;
 
 pub struct VisualsPlugin;
-
 impl Plugin for VisualsPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ClearColor(palette::SKY))
-            .add_systems(Startup, draw_level)
-            .add_systems(Update, (decorate_player, decorate_coins))
+        app.insert_resource(ClearColor(Color::srgb(0.09, 0.16, 0.14)))
+            .add_systems(Startup, draw_road)
+            .add_systems(Update, decorate_cars)
             .add_systems(
                 PostUpdate,
-                (interpolate_positions, face_movement)
-                    .before(TransformSystems::Propagate)
-                    .before(crate::camera::CameraSystems),
+                (interpolate_positions, scroll_road, show_effects)
+                    .before(TransformSystems::Propagate),
             );
     }
 }
@@ -58,105 +40,182 @@ fn sprite(color: Color, size: Vec2, center: Vec2, z: f32) -> impl Bundle {
     )
 }
 
-fn draw_level(mut commands: Commands, level: Res<Level>) {
-    let solid_at = |point: Vec2| level.solids.iter().any(|solid| solid.contains(point));
-    for solid in &level.solids {
-        commands.spawn((
-            Name::new("Ground"),
-            sprite(palette::GROUND, solid.size(), solid.center(), layer::LEVEL),
+fn draw_road(mut commands: Commands) {
+    commands.spawn(sprite(
+        Color::srgb(0.16, 0.19, 0.23),
+        Vec2::new(ROAD_HALF_WIDTH * 2.0, 1000.0),
+        Vec2::ZERO,
+        0.0,
+    ));
+    for x in [-ROAD_HALF_WIDTH, ROAD_HALF_WIDTH] {
+        commands.spawn(sprite(
+            Color::srgb(0.85, 0.87, 0.80),
+            Vec2::new(5.0, 1000.0),
+            Vec2::new(x, 0.0),
+            0.1,
         ));
-        // Grass on each tile whose top is exposed to the sky.
-        let columns = (solid.width() / TILE).round() as usize;
-        for column in 0..columns {
-            let x = solid.min.x + (column as f32 + 0.5) * TILE;
-            if !solid_at(Vec2::new(x, solid.max.y + 0.5 * TILE)) {
-                commands.spawn(sprite(
-                    palette::GRASS,
-                    Vec2::new(TILE, GRASS_DEPTH),
-                    Vec2::new(x, solid.max.y - 0.5 * GRASS_DEPTH),
-                    layer::LEVEL + 0.1,
-                ));
-            }
+    }
+    for x in [-70.0, 70.0] {
+        for i in -6..=6 {
+            let y = i as f32 * 90.0;
+            commands.spawn((
+                RoadMark(y),
+                sprite(
+                    Color::srgb(0.55, 0.60, 0.61),
+                    Vec2::new(4.0, 38.0),
+                    Vec2::new(x, y),
+                    0.1,
+                ),
+            ));
         }
     }
-
-    let goal = level.goal;
-    let pole = Vec2::new(4.0, goal.height() * 2.0);
-    let pole_center = Vec2::new(goal.center().x, goal.min.y + 0.5 * pole.y);
-    commands.spawn((
-        Name::new("Goal pole"),
-        sprite(palette::POLE, pole, pole_center, layer::GOAL),
-    ));
-    commands.spawn((
-        Name::new("Goal flag"),
-        sprite(
-            palette::FLAG,
-            Vec2::new(22.0, 14.0),
-            Vec2::new(goal.center().x + 13.0, goal.min.y + pole.y - 9.0),
-            layer::GOAL,
-        ),
-    ));
 }
 
-fn decorate_player(
-    mut commands: Commands,
-    tuning: Res<PlayerTuning>,
-    players: Query<(Entity, &Position), Added<Player>>,
-) {
-    let size = tuning.size;
-    for (player, position) in &players {
+type NewCars<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Position,
+        Option<&'static Traffic>,
+        Has<Player>,
+    ),
+    Or<(Added<Player>, Added<Traffic>)>,
+>;
+
+fn decorate_cars(mut commands: Commands, cars: NewCars) {
+    for (entity, position, traffic, player) in &cars {
+        let oncoming = traffic.is_some_and(|car| car.speed < 0.0);
+        let color = if player {
+            palette::BLUE
+        } else if oncoming {
+            Color::srgb(0.94, 0.38, 0.30)
+        } else {
+            Color::srgb(0.82, 0.85, 0.78)
+        };
         commands
-            .entity(player)
+            .entity(entity)
             .insert((
-                Transform::from_translation(position.0.extend(layer::PLAYER)),
+                Transform::from_translation(position.0.extend(2.0)).with_rotation(
+                    Quat::from_rotation_z(if oncoming { std::f32::consts::PI } else { 0.0 }),
+                ),
                 Visibility::default(),
             ))
             .with_children(|body| {
-                // Children are offset so the parent's origin stays at the feet.
                 body.spawn(sprite(
-                    palette::PLAYER,
-                    size,
-                    Vec2::new(0.0, 0.5 * size.y),
-                    0.0,
+                    Color::srgba(0.0, 0.0, 0.0, 0.3),
+                    CAR_SIZE + Vec2::splat(6.0),
+                    Vec2::new(4.0, -4.0),
+                    -0.2,
+                ));
+                if player {
+                    body.spawn((
+                        Effect::Protection,
+                        sprite(
+                            Color::srgb(1.0, 0.82, 0.3),
+                            CAR_SIZE + Vec2::splat(12.0),
+                            Vec2::ZERO,
+                            -0.1,
+                        ),
+                        Visibility::Hidden,
+                    ));
+                    body.spawn((
+                        Effect::Exhaust,
+                        sprite(
+                            Color::srgb(0.5, 0.9, 1.0),
+                            Vec2::new(22.0, 35.0),
+                            Vec2::new(0.0, -49.0),
+                            -0.1,
+                        ),
+                        Visibility::Hidden,
+                    ));
+                }
+                for x in [-24.0, 24.0] {
+                    for y in [-24.0, 24.0] {
+                        body.spawn(sprite(
+                            Color::srgb(0.035, 0.045, 0.06),
+                            Vec2::new(8.0, 20.0),
+                            Vec2::new(x, y),
+                            0.0,
+                        ));
+                    }
+                }
+                body.spawn(sprite(color, CAR_SIZE, Vec2::ZERO, 0.1));
+                body.spawn(sprite(
+                    Color::srgb(0.06, 0.14, 0.21),
+                    Vec2::new(34.0, 17.0),
+                    Vec2::new(0.0, 15.0),
+                    0.2,
                 ));
                 body.spawn(sprite(
-                    palette::EYE,
-                    Vec2::new(4.0, 8.0),
-                    Vec2::new(0.22 * size.x, 0.72 * size.y),
-                    0.1,
+                    Color::srgb(0.1, 0.22, 0.29),
+                    Vec2::new(30.0, 11.0),
+                    Vec2::new(0.0, -24.0),
+                    0.2,
                 ));
+                for x in [-15.0, 15.0] {
+                    body.spawn(sprite(
+                        Color::srgb(1.0, 0.94, 0.65),
+                        Vec2::new(9.0, 6.0),
+                        Vec2::new(x, 34.0),
+                        0.2,
+                    ));
+                    body.spawn(sprite(
+                        Color::srgb(0.8, 0.12, 0.14),
+                        Vec2::new(8.0, 4.0),
+                        Vec2::new(x, -36.0),
+                        0.2,
+                    ));
+                }
             });
     }
 }
 
-fn decorate_coins(mut commands: Commands, coins: Query<(Entity, &Position), Added<Coin>>) {
-    for (coin, position) in &coins {
-        commands.entity(coin).insert((
-            Sprite::from_color(palette::COIN, Vec2::splat(14.0)),
-            // A square turned on its corner reads as a gem-like coin.
-            Transform::from_translation(position.0.extend(layer::COIN))
-                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_4)),
-        ));
-    }
-}
-
-/// Places moving bodies between their last two fixed-step positions, so motion
-/// stays smooth when the display rate differs from the fixed rate.
 fn interpolate_positions(
     fixed: Res<Time<Fixed>>,
+    run: Res<Run>,
     mut bodies: Query<(&Position, &PreviousPosition, &mut Transform)>,
 ) {
-    let blend = fixed.overstep_fraction();
+    let blend = if run.finished {
+        1.0
+    } else {
+        fixed.overstep_fraction()
+    };
     for (position, previous, mut transform) in &mut bodies {
-        let at = previous.0.lerp(position.0, blend);
-        transform.translation = at.extend(transform.translation.z);
+        transform.translation = previous
+            .0
+            .lerp(position.0, blend)
+            .extend(transform.translation.z);
     }
 }
 
-fn face_movement(mut players: Query<(&Velocity, &mut Transform), With<Player>>) {
-    for (velocity, mut transform) in &mut players {
-        if velocity.0.x.abs() > 1.0 {
-            transform.scale.x = velocity.0.x.signum();
-        }
+fn scroll_road(
+    fixed: Res<Time<Fixed>>,
+    run: Res<Run>,
+    mut marks: Query<(&RoadMark, &mut Transform)>,
+) {
+    let blend = if run.finished {
+        1.0
+    } else {
+        f64::from(fixed.overstep_fraction())
+    };
+    let distance = run.previous_distance + (run.distance - run.previous_distance) * blend;
+    for (mark, mut transform) in &mut marks {
+        transform.translation.y = mark.0 - (distance % 90.0) as f32;
+    }
+}
+
+fn show_effects(run: Res<Run>, mut effects: Query<(&Effect, &mut Visibility)>) {
+    for (protection, mut visibility) in &mut effects {
+        let visible = if matches!(protection, Effect::Protection) {
+            run.protection > 0.0 && !run.finished
+        } else {
+            run.boosting
+        };
+        *visibility = if visible {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     }
 }

@@ -1,120 +1,118 @@
 # Architecture
 
-This document describes the current implementation and conventions for extending
-it. [AGENTS.md](../../AGENTS.md) is the agent working brief;
-[CONTRIBUTING.md](../../CONTRIBUTING.md) covers shaping, review, and validation.
-[ADRs](decisions/README.md) record significant architectural choices and rationale.
+The application implements [Car Drive](../pitches/car-drive/pitch--car-movements.md),
+a three-lane arcade driving game replacing the starter platformer. It uses Rust
+2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml) and
+[Cargo.lock](../../Cargo.lock). Traffic randomness uses `fastrand` 2.5.0.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for checks and
+[ADRs](decisions/README.md) for design history.
 
-## Current structure and runtime
+## Simulation and presentation
 
-The project is one Rust binary crate implementing the
-[starter platformer pitch](../pitches/starter-platformer/pitch--starter-platformer.md):
-one level from a text map, a player who runs and jumps, coins, a goal flag, a
-following camera, and a HUD. [Cargo.toml](../../Cargo.toml) uses Rust edition 2024
-and Bevy 0.20 with default features disabled and the `2d`, `audio`, and `ui`
-feature sets enabled. Bevy is the only dependency; movement is hand-written
-([ADR 0001](decisions/0001-move-the-player-with-hand-written-kinematics.md)).
-Dependencies have a higher development optimization level than the application.
-[Cargo.lock](../../Cargo.lock) pins dependency resolution;
-[.cargo/config.toml](../../.cargo/config.toml) configures Clang and LLD for x86_64
-Linux, and [.mise/](../../.mise/config.toml) pins the toolchain and defines tasks
-([ADR 0003](decisions/0003-run-project-tasks-with-mise.md)).
+[src/main.rs](../../src/main.rs) composes the simulation, input, visuals, camera,
+and HUD plugins. Simulation runs headless under `MinimalPlugins`, following
+[ADR 0002](decisions/0002-keep-the-simulation-headless-behind-a-controls-resource.md).
+Only input reads devices; only presentation writes `Transform`.
 
-[src/main.rs](../../src/main.rs) composes the app from plugins in two layers
-([ADR 0002](decisions/0002-keep-the-simulation-headless-behind-a-controls-resource.md)).
+| Module | Responsibility |
+| --- | --- |
+| [simulation.rs](../../src/simulation.rs) | Resources, player startup, fixed-step ordering |
+| [level.rs](../../src/level.rs) | Road bounds, lane centres, traffic components, random spawning with spacing checks, movement and cleanup |
+| [player.rs](../../src/player.rs) | `Controls`, car-centred `Position`/`PreviousPosition`, movement tuning, lateral steering |
+| [run.rs](../../src/run.rs) | Distance, energy, protection, swept collision, game over and restart |
+| [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate` |
+| [visuals.rs](../../src/visuals.rs) | Procedural car sprites, lane marks, interpolation, boost exhaust and protection outline |
+| [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
+| [hud.rs](../../src/hud.rs) | Hearts, distance in metres, boost gauge, controls and game-over cue |
+| [tests.rs](../../src/tests.rs) | Deterministic tests of the actual simulation |
 
-**Simulation**, which runs without a window and is used by the tests:
+## Fixed-step flow
 
-- [simulation.rs](../../src/simulation.rs): `SimulationPlugin` registers the
-  resources, spawns the player and coins at startup, and orders the fixed-step
-  systems in the `GameSystems` set.
-- [level.rs](../../src/level.rs): the `Level` resource parsed from `STARTER_MAP`.
-  `#` tiles are merged into horizontal runs of solid rectangles; `P`, `G`, and `o`
-  mark the start, goal, and coins. The origin is the map's bottom-left corner and a
-  tile is 32 world units.
-- [player.rs](../../src/player.rs): the `Player` marker, `Position` (feet),
-  `PreviousPosition`, `Velocity`, `Grounding`, the `Controls` input bridge,
-  `PlayerTuning`, `step_player`, and the pure `move_and_collide`.
-- [run.rs](../../src/run.rs): the `Run` resource (coins, time, falls, finished) and
-  the rules for coins, the goal, falling out, restarting, and the clock.
+At Bevy's default 64 Hz, `GameSystems` chains:
 
-**Presentation**, which needs a window:
+1. Consume the latched restart request. Reset all run state, the traffic timer,
+   player current/previous positions and controls; reseed randomness and despawn traffic. Skip driving
+   for that tick so the reset state is exact.
+2. Unless finished or just restarted, update protection, boost and distance;
+   steer the player; attempt an individual traffic spawn when its timer expires;
+   move traffic; resolve collisions; remove off-screen traffic. Chaining applies deferred spawns
+   before movement and deferred removals before the next tick.
 
-- [input.rs](../../src/input.rs): keyboard and gamepad sampling into `Controls`, and
-  Escape to quit. The only module that reads devices.
-- [visuals.rs](../../src/visuals.rs): the palette, coloured sprites for the level,
-  goal, coins, and player, render interpolation, and facing.
-- [camera.rs](../../src/camera.rs): a `Camera2d` with a minimum 960 × 540 view that
-  follows the player and stays inside the level.
-- [hud.rs](../../src/hud.rs): the progress panel, controls reminder, and finish cue.
+Held steering and boost apply each tick; restart is consumed once. Game over gates
+simulation itself, not just input. In `PostUpdate`, positions and road distance
+interpolate between the last two ticks before transform propagation. At game over,
+rendering uses the final positions directly, avoiding interpolation cycling while
+simulation is stopped.
 
-### Frame and fixed-step flow
+## Road and movement
 
-1. `PreUpdate`, after Bevy's `InputSystems`: `sample_controls` writes held values
-   and latches presses into `Controls`. After the goal only Restart is accepted.
-2. `FixedUpdate` at 64 Hz, chained in `GameSystems`: `restart_run` consumes a
-   restart; `step_player` consumes a jump press, steers, jumps, applies gravity, and
-   collides; then `collect_coins`, `reach_goal`, `fall_out`, and `tick_clock`.
-3. `Update`: visuals add sprites to newly spawned players and coins; the HUD
-   refreshes when `Run` changes.
-4. `PostUpdate`, before transform propagation: positions are interpolated into
-   transforms, the player faces its direction of travel, and then the camera
-   follows the player.
+The road spans x = −210…210 with lane centres −140, 0, 140. Cars have a 44 × 78
+collision box anchored at their centre. The player starts at (140, −230), moves
+sideways at up to 420 units/s, stops on release, and is clamped inside the road.
+The camera keeps the same world extent on resize, preserving reaction distance;
+unusual aspect ratios stretch the view.
 
-### Movement model
+Cruising initially advances at 300 units/s; boost reaches 540. Road marks scroll by
+travelled distance, while traffic moves at its own signed speed minus player speed. Positive
+traffic speed (140) is same-direction; negative (−150) is oncoming. Front windows,
+headlights and opposite orientation distinguish direction as well as colour.
+Ten world units count as one displayed metre. Distance uses `f64` to keep long
+runs and scrolling stable.
 
-The player is a 24 × 40 box anchored at the centre of its feet. Horizontal speed
-moves toward the input at a ground or air acceleration. A jump fires when a press
-is buffered (0.12 s) and the player is grounded or within coyote time (0.1 s) of
-leaving the ground. Releasing jump while rising caps the upward speed, giving a
-short hop. Gravity is capped at a terminal fall speed. `move_and_collide` moves
-along x, then y, clamping against overlapping solids; touching edges do not count
-as overlap, so the player slides along the floor. A downward block marks the player
-grounded. With the default tuning a held jump rises about three and a half tiles and a
-running jump clears four.
+Every 1,500 metres, cruise and boost speed gain 5% of their initial values and
+traffic spawn frequency increases. Progression caps after six steps (9,000 metres),
+at 390 units/s cruising and 702 boosting. Speed changes on the tick after crossing
+a threshold; existing traffic retains its signed speed. Restart resets progression
+through zero distance and starts a fresh random traffic sequence.
 
-## Code conventions and boundaries
+Cars spawn individually at y = 480, even while previous cars remain on the road,
+and leave below y = −470. Each spawn shuffles the candidate lanes. An empty lane
+randomly receives same-direction or oncoming traffic; subsequent cars in that lane
+share its speed until it clears, keeping at least 180 units between their centres.
+The next random delay is 1.2–2.0 seconds divided by `1 + 0.15 × difficulty_step`.
+Thus later stages create denser traffic without simultaneous batches. If no lane
+is safe, the spawner retries after 0.1 seconds.
 
-Use Bevy entities and components for game objects, resources for shared state, and
-systems for behavior. Keep application composition easy to locate in `main.rs`.
-Keep simulation plugins free of rendering and device input so they keep running
-headless; presentation plugins react to simulation components and resources.
+Before admission, each candidate is checked against pairs of existing cars in the
+other lanes. Intersecting their relative-motion intervals detects whether all three
+could fit within a 360-unit longitudinal band before any of them despawns. Such
+candidates are rejected. The lifetime estimate uses initial cruise speed, so boost,
+boost release and increasing difficulty cannot extend the predicted conflict window.
+This prevents compact three-lane walls and same-lane overlaps; it does not establish
+that every possible steering choice can recover safely. Headless tests use explicit
+random seeds; normal play and restart use fresh seeds. See
+[ADR 0005](decisions/0005-spawn-continuous-random-traffic.md) for the change from waves.
 
-Follow rustfmt and nearby Rust naming and import conventions. Prefer small,
-purposeful systems with explicit data access. Make scheduling dependencies explicit
-when behavior depends on order. Read device input only in `input.rs` and pass it to
-fixed-step systems through `Controls`. Keep pure logic, such as map parsing and
-collision, in plain functions that unit tests can call directly.
+## Boost and damage
 
-New dependencies, physics integration, simulation timing, and persisted formats can
-create lasting constraints; explain such choices in an ADR. Grow modules into
-folders (`src/player/mod.rs` and friends) or new plugins only when a feature needs
-them.
+The tank starts full, drains at 40%/s and recharges at 20%/s without boost. The last
+partially powered tick receives a proportional speed increase. Emptying the tank
+requires releasing boost before it can activate again; it can recharge while the
+button remains held. The HUD shows remaining energy and the car has exhaust while
+boosting.
 
-## Validation
+A swept relative segment against the expanded car box uses Bevy's `RayCast2d` to
+catch collisions between tick endpoints, including simultaneous lateral motion.
+A hit removes one of three hearts and grants 1.4 seconds of protection, shown by a
+steady gold outline. Each traffic car can damage the player only once. No collision
+impulses or rotation physics are simulated. The third hit freezes the drive and
+shows distance and restart controls.
 
-The [contribution guide](../../CONTRIBUTING.md#setup-and-validation) lists the
-formatting, Clippy, build, test, and manual-run checks. There is no CI workflow.
+These choices supersede platformer movement in
+[ADR 0004](decisions/0004-drive-in-road-relative-coordinates.md). Tuning values are
+initial play-test values, not claims of final balance.
 
-- **Unit tests** beside each module cover map parsing and errors, `move_and_collide`
-  against floors, walls, and ceilings, and camera bounds.
-- **Simulation tests** in [src/tests.rs](../../src/tests.rs) step the real plugins
-  headless, one fixed step per update. They cover landing, running and stopping,
-  held and tapped jump heights, a running jump over a four-tile gap, no midair
-  jumps, buffered jumps, walls, coins, the goal and clock, falling out, and restart.
+## Validation and conventions
 
-These tests guard behavior, not feel. Play the level after any tuning change, and
-check visuals and input by hand.
+`mise run check` runs formatting, Clippy, build, and tests in the project Nix shell
+on NixOS. Headless tests cover steering and edges, boost depletion/recharge,
+protection and repeated contact, tunnelling and near misses, relative traffic
+motion and cleanup, game-over freeze, complete restart, difficulty thresholds and
+caps, reproducible random layouts, continuous individual spawning, and same-lane
+spacing and three-lane wall checks across seeds and difficulty levels with boost
+cycling. Graphical play checks are still required for
+readability, input mapping and feel; see the contribution guide.
 
-## Documentation boundaries
-
-- [Game idea](../idea.md): direction and longer-term possibilities.
-- [Pitches](../pitches/README.md): intended work, rough solutions, risks, and
-  exclusions.
-- Architecture documentation: current structure, behavior, and coding conventions.
-- [ADRs](decisions/README.md): significant choices, alternatives, consequences, and
-  checks that expose drift.
-
-Update conventions with the code. Keep ideas clearly separate from implemented
-behavior. Preserve decision history by amending or superseding an ADR when its
-choice changes.
+Keep game behavior in focused ECS systems. New dependencies, persisted formats or
+changes to simulation boundaries need an ADR. Update this document with implemented
+changes; pitches describe intended work and ADRs preserve earlier rationale.

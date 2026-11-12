@@ -1,48 +1,43 @@
-# Bevy template
+# Car Drive
 
-A starting point for 2D games built with [Bevy](https://bevy.org) 0.20. It ships a
-small, tested platformer, a documentation structure for shaping and recording work,
-agent instructions with a library of Bevy skills, and [mise](https://mise.jdx.dev)
-tasks to build, test, and run the game.
+A small 2D arcade driving game built with [Bevy](https://bevy.org) 0.20.
+Steer through three lanes of traffic, use boost to cover more distance, and keep
+three hearts for as long as possible. It replaces the template's starter platformer.
+
+The [pitch and drawing](docs/pitches/car-drive/pitch--car-movements.md) describe the
+first playable experiment; [architecture](docs/architecture/README.md) describes
+its implementation. Cars and road are drawn procedurally, with no external assets.
+
+## How to play
+
+The car drives forward automatically. Same-direction cars are slower; oncoming
+cars approach faster. Traffic arrives continuously on random lanes with varying gaps. Boost increases
+speed but offers no protection. A hit costs one heart and briefly grants protection,
+shown by a gold outline. After three hits the drive ends and displays your distance.
+
+| Action | Keyboard | Controller |
+| --- | --- | --- |
+| Steer left / right | A / D or Left / Right | Left stick or D-pad |
+| Boost (hold) | Space | South (A / Cross) |
+| Restart | R or Backspace | Select |
+| Quit | Escape | – |
+
+Release boost to recharge. If the tank empties, release before boosting again.
+Every 1,500 metres, traffic becomes denser and your speed increases, up to six steps.
+Restart resets difficulty and generates fresh traffic. Records are not saved. Movement values and traffic
+patterns are initial play-test values.
 
 ## What's inside
 
 | Path | Purpose |
 | --- | --- |
-| `src/` | The starter platformer: headless simulation plus presentation plugins |
-| `docs/idea.md` | Game direction and longer-term possibilities |
-| `docs/pitches/` | Shaped feature proposals (Problem, Solution, Security, Rabbit Holes, No-Gos) |
-| `docs/architecture/` | Current structure and conventions, and [decision records](docs/architecture/decisions/README.md) |
-| `.agents/skills/` | Bevy 0.20 skills for coding agents; versions in `skills-lock.json` |
-| `shell.nix` | Native build and runtime libraries for NixOS (`nix-shell`) |
-| `.mise/` | Pinned Rust toolchain and `build`, `test`, `run`, `check`, `fmt`, `agents:init-claude` tasks |
-| `AGENTS.md`, `CONTRIBUTING.md` | Working brief for agents; workflow and validation for everyone |
-
-## Starting a new game from this template
-
-1. Rename the package in `Cargo.toml` and the window title in `src/main.rs`.
-2. Replace [docs/idea.md](docs/idea.md) with your game's direction.
-3. Shape the first feature as a [pitch](docs/pitches/README.md). Keep the starter
-   pitch as an example or delete it with the code it describes.
-4. Review the [ADRs](docs/architecture/decisions/README.md): keep those that still
-   hold, and supersede those you change.
-5. Rewrite the project description in this README, `AGENTS.md`, and the manual
-   checks in `CONTRIBUTING.md` as the game takes shape.
-
-## How to play the starter
-
-Run right, collect the coins, and touch the flag. Falling out of the level returns
-you to the start; Restart begins a fresh run with all coins back and the clock reset.
-
-| Action | Keyboard | Controller |
-| --- | --- | --- |
-| Run left / right | A / D or Left / Right | Left stick or D-pad |
-| Jump (hold for higher) | Space, W, or Up | South (A / Cross) |
-| Restart | R or Backspace | Select |
-| Quit | Escape | – |
-
-Keys are physical positions, so WASD stays in place on any keyboard layout. A jump
-pressed just before landing, or just after running off a ledge, still counts.
+| `src/` | Headless driving simulation and presentation plugins |
+| `docs/idea.md` | Game direction |
+| `docs/pitches/` | Feature proposals and sketches |
+| `docs/architecture/` | Implemented behavior and decision records |
+| `.agents/skills/` | Installed Bevy skills; hashes in `skills-lock.json` |
+| `shell.nix` | Native libraries for NixOS |
+| `.mise/` | Pinned Rust toolchain and development tasks |
 
 ## Requirements
 
@@ -111,7 +106,7 @@ mise run check   # format, Clippy, build, and tests before a PR
 mise tasks       # list every task
 ```
 
-Each task passes extra arguments to Cargo, for example `mise run test jump`. The
+Each task passes extra arguments to Cargo, for example `mise run test boost`. The
 tasks are plain scripts in [.mise/tasks/](.mise/tasks/), so the equivalent Cargo
 commands also work:
 

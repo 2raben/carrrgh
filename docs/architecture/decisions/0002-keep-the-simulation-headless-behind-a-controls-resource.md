@@ -1,6 +1,7 @@
 ---
 tags: [adr]
 status: accepted
+amended-by: [0004-drive-in-road-relative-coordinates.md]
 date: 2026-11-12
 sources:
   - src/main.rs
@@ -11,6 +12,10 @@ sources:
 ---
 
 # 0002 — Keep the simulation headless behind a `Controls` resource
+
+Amended by [ADR 0004](0004-drive-in-road-relative-coordinates.md): Car Drive uses
+traffic instead of coins and held `boost` instead of jumping. The original
+examples below preserve the motivation; the headless boundary still applies.
 
 ## Context
 

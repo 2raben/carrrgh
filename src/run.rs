@@ -1,158 +1,157 @@
-//! The rules of one run through the level: coins, the goal, falling out, and
-//! restarting. Like the player movement, these run headless on the fixed timestep.
-
+//! Boost, distance, swept collisions, and the lifecycle of a drive.
 use bevy::prelude::*;
 
-use crate::level::Level;
-use crate::player::{
-    Controls, Grounding, Player, PlayerTuning, Position, PreviousPosition, Velocity, body_rect,
-    respawn,
-};
+use crate::level::{CAR_SIZE, PLAYER_START, Traffic, TrafficFlow};
+use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
 
-/// Marks a collectable coin. Its [`Position`] is the coin's centre.
-#[derive(Component, Debug)]
-pub struct Coin;
-
-/// Coins within this distance of the player's box are collected.
-pub const COIN_RADIUS: f32 = 10.0;
-
-/// Progress through the current run.
-#[derive(Resource, Clone, Debug, Default)]
+#[derive(Resource, Clone, Debug)]
 pub struct Run {
-    pub coins: usize,
-    pub total_coins: usize,
-    /// Seconds since the run started; stops when the goal is reached.
-    pub elapsed: f32,
+    pub lives: u8,
+    pub distance: f64,
+    pub previous_distance: f64,
+    pub energy: f32,
+    pub speed: f32,
+    pub boosting: bool,
+    /// Empty tanks must be released before boost can be used again.
+    pub exhausted: bool,
+    pub protection: f32,
     pub finished: bool,
-    /// Times the player fell out of the level during this run.
-    pub falls: u32,
+    pub just_restarted: bool,
 }
 
-pub fn coin_bundle(center: Vec2) -> impl Bundle {
-    (Name::new("Coin"), Coin, Position(center))
-}
-
-/// Spawns the level's coins and resets the run.
-pub fn start_run(mut commands: Commands, level: Res<Level>, mut run: ResMut<Run>) {
-    for &center in &level.coins {
-        commands.spawn(coin_bundle(center));
+impl Default for Run {
+    fn default() -> Self {
+        Self {
+            lives: 3,
+            distance: 0.0,
+            previous_distance: 0.0,
+            energy: 1.0,
+            speed: 0.0,
+            boosting: false,
+            exhausted: false,
+            protection: 0.0,
+            finished: false,
+            just_restarted: false,
+        }
     }
-    *run = Run {
-        total_coins: level.coins.len(),
-        ..default()
-    };
 }
 
-/// Consumes a restart request: the player, coins, and run start over.
+impl Run {
+    /// Ten world units per metre; cap progression to preserve reaction time.
+    pub fn difficulty_step(&self) -> usize {
+        (self.distance / 15_000.0).floor().clamp(0.0, 6.0) as usize
+    }
+}
+
+pub fn driving(run: Res<Run>) -> bool {
+    !run.finished && !run.just_restarted
+}
+
 pub fn restart_run(
     mut commands: Commands,
-    level: Res<Level>,
     mut controls: ResMut<Controls>,
     mut run: ResMut<Run>,
-    coins: Query<Entity, With<Coin>>,
-    mut players: Query<
-        (
-            &mut Position,
-            &mut PreviousPosition,
-            &mut Velocity,
-            &mut Grounding,
-        ),
-        With<Player>,
-    >,
+    mut flow: ResMut<TrafficFlow>,
+    traffic: Query<Entity, With<Traffic>>,
+    mut players: Query<(&mut Position, &mut PreviousPosition), With<Player>>,
 ) {
-    if !std::mem::take(&mut controls.restart) {
+    run.just_restarted = std::mem::take(&mut controls.restart);
+    if !run.just_restarted {
         return;
     }
-    for (mut position, mut previous, mut velocity, mut grounding) in &mut players {
-        respawn(
-            level.start,
-            &mut position,
-            &mut previous,
-            &mut velocity,
-            &mut grounding,
-        );
+    for entity in &traffic {
+        commands.entity(entity).despawn();
     }
-    for coin in &coins {
-        commands.entity(coin).despawn();
+    for (mut position, mut previous) in &mut players {
+        position.0 = PLAYER_START;
+        previous.0 = PLAYER_START;
     }
-    for &center in &level.coins {
-        commands.spawn(coin_bundle(center));
-    }
+    *controls = Controls::default();
+    *flow = TrafficFlow::default();
     *run = Run {
-        total_coins: level.coins.len(),
+        just_restarted: true,
         ..default()
     };
 }
 
-pub fn collect_coins(
-    mut commands: Commands,
+pub fn advance_run(
+    time: Res<Time>,
+    controls: Res<Controls>,
     tuning: Res<PlayerTuning>,
     mut run: ResMut<Run>,
-    players: Query<&Position, With<Player>>,
-    coins: Query<(Entity, &Position), With<Coin>>,
 ) {
-    for player in &players {
-        let body = body_rect(player.0, tuning.size);
-        for (coin, center) in &coins {
-            let nearest = center.0.clamp(body.min, body.max);
-            if nearest.distance(center.0) <= COIN_RADIUS {
-                commands.entity(coin).despawn();
-                run.coins += 1;
-            }
-        }
+    let dt = time.delta_secs();
+    run.protection = (run.protection - dt).max(0.0);
+    if !controls.boost {
+        run.exhausted = false;
     }
+    run.boosting = controls.boost && !run.exhausted && run.energy > 0.0;
+    // A partially full final step receives only its available share of boost.
+    let boosted_fraction = if run.boosting {
+        (run.energy / (tuning.boost_drain * dt)).min(1.0)
+    } else {
+        0.0
+    };
+    if run.boosting {
+        run.energy = (run.energy - tuning.boost_drain * dt).max(0.0);
+        if run.energy == 0.0 {
+            run.exhausted = true;
+        }
+    } else {
+        run.energy = (run.energy + tuning.boost_recharge * dt).min(1.0);
+    }
+    let speed_multiplier = 1.0 + 0.05 * run.difficulty_step() as f32;
+    run.speed = (tuning.cruise_speed
+        + (tuning.boost_speed - tuning.cruise_speed) * boosted_fraction)
+        * speed_multiplier;
+    run.previous_distance = run.distance;
+    run.distance += f64::from(run.speed * dt);
 }
 
-pub fn reach_goal(
-    level: Res<Level>,
+/// Segment versus the Minkowski-expanded car box, in relative coordinates.
+/// Both cars may move during a tick: checking only their endpoints misses hits.
+pub fn swept_hit(start: Vec2, end: Vec2, half_size: Vec2) -> bool {
+    if start.abs().cmple(half_size).all() {
+        return true;
+    }
+    let delta = end - start;
+    let Ok(direction) = Dir2::new(delta) else {
+        return false;
+    };
+    RayCast2d::new(start, direction, delta.length())
+        .aabb_intersection_at(&Aabb2d::new(Vec2::ZERO, half_size))
+        .is_some()
+}
+
+pub fn collide(
     tuning: Res<PlayerTuning>,
     mut run: ResMut<Run>,
-    players: Query<&Position, With<Player>>,
+    players: Query<(&Position, &PreviousPosition), With<Player>>,
+    mut traffic: Query<(&Position, &PreviousPosition, &mut Traffic)>,
 ) {
-    if run.finished {
+    if run.protection > 0.0 {
         return;
     }
-    let reached = players.iter().any(|player| {
-        !body_rect(player.0, tuning.size)
-            .intersect(level.goal)
-            .is_empty()
-    });
-    if reached {
-        run.finished = true;
-    }
-}
-
-/// Returns the player to the start after falling below the level. Collected
-/// coins and the clock carry on; only Restart resets the run.
-pub fn fall_out(
-    level: Res<Level>,
-    mut run: ResMut<Run>,
-    mut players: Query<
-        (
-            &mut Position,
-            &mut PreviousPosition,
-            &mut Velocity,
-            &mut Grounding,
-        ),
-        With<Player>,
-    >,
-) {
-    for (mut position, mut previous, mut velocity, mut grounding) in &mut players {
-        if position.0.y < level.fall_limit() {
-            respawn(
-                level.start,
-                &mut position,
-                &mut previous,
-                &mut velocity,
-                &mut grounding,
-            );
-            run.falls += 1;
+    let Ok((player, previous_player)) = players.single() else {
+        return;
+    };
+    for (position, previous, mut car) in &mut traffic {
+        if !car.hit
+            && swept_hit(
+                previous.0 - previous_player.0,
+                position.0 - player.0,
+                CAR_SIZE,
+            )
+        {
+            car.hit = true;
+            run.lives = run.lives.saturating_sub(1);
+            run.protection = tuning.protection_seconds;
+            if run.lives == 0 {
+                run.finished = true;
+                run.boosting = false;
+                run.speed = 0.0;
+            }
+            break;
         }
-    }
-}
-
-pub fn tick_clock(time: Res<Time>, mut run: ResMut<Run>) {
-    if !run.finished {
-        run.elapsed += time.delta_secs();
     }
 }
