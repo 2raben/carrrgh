@@ -19,6 +19,13 @@ Rarely, a pickup lies on the road. A red heart restores a lost heart. A cyan shi
 is kept (at most one) and absorbs your next hit without costing a heart; the HUD
 shows it beside your hearts and a bubble surrounds your car.
 
+On first start you create a player: type a name (or keep "Driver") and press
+Enter or the controller's South / Start button. Every 10 metres driven earn one
+coin. A drive's coins are added to your saved balance when it ends: at game over,
+on restart, or when you quit. The balance is stored in `profiles.sqlite3` in your
+data directory (on Linux `~/.local/share/car-drive`); set `CAR_DRIVE_DATA_DIR`
+to use another directory, for example for play tests.
+
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Steer left / right | A / D or Left / Right | Left stick or D-pad |
@@ -28,7 +35,7 @@ shows it beside your hearts and a bubble surrounds your car.
 
 Release boost to recharge. If the tank empties, release before boosting again.
 Every 1,500 metres, traffic becomes denser and your speed increases, up to six steps.
-Restart resets difficulty and generates fresh traffic. Records are not saved. Movement values and traffic
+Restart resets difficulty and generates fresh traffic. Distance records are not saved. Movement values and traffic
 patterns are initial play-test values.
 
 ## What's inside

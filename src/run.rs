@@ -1,4 +1,4 @@
-//! Boost, distance, swept collisions, and the lifecycle of a drive.
+//! Boost, distance, swept collisions, coins, and the lifecycle of a drive.
 use bevy::prelude::*;
 
 use crate::level::{CAR_SIZE, OnRoad, PLAYER_START, Traffic, TrafficFlow};
@@ -6,6 +6,16 @@ use crate::pickups::PickupFlow;
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
 
 pub const MAX_LIVES: u8 = 3;
+pub const UNITS_PER_METRE: f64 = 10.0;
+/// Play-test value: whole coins earned per driven distance.
+pub const METRES_PER_COIN: f64 = 10.0;
+
+/// A drive ended by game over, restart or quitting, with what it earned.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct RunEnded {
+    pub distance: f64,
+    pub coins: u64,
+}
 
 #[derive(Resource, Clone, Debug)]
 pub struct Run {
@@ -24,6 +34,8 @@ pub struct Run {
     pub shield_absorbed: bool,
     pub finished: bool,
     pub just_restarted: bool,
+    /// The end of this drive was reported, so it is credited only once.
+    pub reported: bool,
 }
 
 impl Default for Run {
@@ -41,11 +53,31 @@ impl Default for Run {
             shield_absorbed: false,
             finished: false,
             just_restarted: false,
+            reported: false,
         }
     }
 }
 
 impl Run {
+    pub fn metres(&self) -> f64 {
+        self.distance / UNITS_PER_METRE
+    }
+
+    /// Coins depend only on distance, not on boost, difficulty or hits.
+    pub fn coins(&self) -> u64 {
+        (self.metres() / METRES_PER_COIN).floor() as u64
+    }
+
+    /// Reports the end of this drive unless it was already reported.
+    pub fn report_end(&mut self, ended: &mut MessageWriter<RunEnded>) {
+        if !std::mem::replace(&mut self.reported, true) {
+            ended.write(RunEnded {
+                distance: self.distance,
+                coins: self.coins(),
+            });
+        }
+    }
+
     /// Ten world units per metre; cap progression to preserve reaction time.
     pub fn difficulty_step(&self) -> usize {
         (self.distance / 10_000.0).floor().clamp(0.0, 9.0) as usize
@@ -64,6 +96,23 @@ impl Run {
 
 pub fn driving(run: Res<Run>) -> bool {
     !run.finished && !run.just_restarted
+}
+
+/// A restart ends the current drive; one already over was reported then.
+pub fn report_abandoned_run(
+    controls: Res<Controls>,
+    mut run: ResMut<Run>,
+    mut ended: MessageWriter<RunEnded>,
+) {
+    if controls.restart {
+        run.report_end(&mut ended);
+    }
+}
+
+pub fn report_finished_run(mut run: ResMut<Run>, mut ended: MessageWriter<RunEnded>) {
+    if run.finished {
+        run.report_end(&mut ended);
+    }
 }
 
 pub fn restart_run(

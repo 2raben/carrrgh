@@ -13,10 +13,12 @@ impl Plugin for SimulationPlugin {
             .init_resource::<run::Run>()
             .init_resource::<level::TrafficFlow>()
             .init_resource::<pickups::PickupFlow>()
+            .add_message::<run::RunEnded>()
             .add_systems(Startup, player::spawn_player)
             .add_systems(
                 FixedUpdate,
                 (
+                    run::report_abandoned_run,
                     run::restart_run,
                     (
                         run::advance_run,
@@ -32,6 +34,7 @@ impl Plugin for SimulationPlugin {
                     )
                         .chain()
                         .run_if(run::driving),
+                    run::report_finished_run,
                 )
                     .chain()
                     .in_set(GameSystems),

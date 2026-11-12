@@ -5,14 +5,30 @@ use crate::level::{
 };
 use crate::pickups::{PICKUP_CLEARANCE, PICKUP_PASSED_Y, Pickup, PickupFlow, keeps_clear};
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
+use crate::profile::{Account, NameDraft, ProfilePhase, ProfilePlugin};
 use crate::run::{Run, swept_hit};
 use crate::simulation::SimulationPlugin;
+use crate::storage::memory::MemoryStore;
+use crate::storage::sqlite::{SqliteStore, TempDir};
+use crate::storage::{ProfileStore, StoreError};
 use bevy::{prelude::*, time::TimeUpdateStrategy};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 struct Sim(App);
 impl Sim {
     fn new() -> Self {
+        Self::build(App::new())
+    }
+    /// Adds profiles and storage; without them the drive starts immediately.
+    fn with_store(store: impl ProfileStore) -> Self {
         let mut app = App::new();
+        app.add_plugins(ProfilePlugin {
+            store: Arc::new(store),
+        });
+        Self::build(app)
+    }
+    fn build(mut app: App) -> Self {
         app.add_plugins((MinimalPlugins, SimulationPlugin))
             .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
             .insert_resource(TrafficFlow {
@@ -79,6 +95,39 @@ impl Sim {
     fn quiet(&mut self) {
         self.0.world_mut().resource_mut::<TrafficFlow>().cooldown = 10000.0;
         self.0.world_mut().resource_mut::<PickupFlow>().remaining = f32::INFINITY;
+    }
+    fn phase(&self) -> ProfilePhase {
+        *self.0.world().resource::<State<ProfilePhase>>().get()
+    }
+    fn account(&self) -> &Account {
+        self.0.world().resource::<Account>()
+    }
+    fn balance(&self) -> Option<u64> {
+        self.account().profile.as_ref().map(|profile| profile.coins)
+    }
+    fn draft(&mut self) -> Mut<'_, NameDraft> {
+        self.0.world_mut().resource_mut::<NameDraft>()
+    }
+    fn submit_name(&mut self, name: &str) {
+        let mut draft = self.draft();
+        draft.text = name.into();
+        draft.submitted = true;
+    }
+    /// Ends the current drive at the given distance by restarting.
+    fn abandon_at(&mut self, distance: f64) {
+        self.run_mut().distance = distance;
+        self.controls().restart = true;
+        self.steps(1);
+        self.quiet();
+    }
+    /// Steps until background storage work is observed, with a hard deadline.
+    fn until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(self) {
+            assert!(Instant::now() < deadline, "{what} did not happen in time");
+            std::thread::yield_now();
+            self.0.update();
+        }
     }
 }
 
@@ -758,4 +807,155 @@ fn pickup_spawns_are_reproducible_with_a_seed() {
     let first = pickup_trace(2, false, 5);
     assert_eq!(first, pickup_trace(2, false, 5));
     assert_ne!(first, pickup_trace(2, false, 6));
+}
+
+#[test]
+fn coins_count_whole_tens_of_metres_regardless_of_boost_or_level() {
+    let coins = |distance, boosting, lives| {
+        Run {
+            distance,
+            boosting,
+            lives,
+            ..default()
+        }
+        .coins()
+    };
+    assert_eq!(coins(0.0, false, 3), 0);
+    assert_eq!(coins(99.9, false, 3), 0);
+    assert_eq!(coins(100.0, false, 3), 1);
+    assert_eq!(coins(12_345.0, false, 3), 123);
+    assert_eq!(coins(95_000.0, true, 1), 950);
+}
+
+#[test]
+fn a_saved_profile_starts_the_drive_directly() {
+    let mut sim = Sim::with_store(MemoryStore::with_profile("Ada", 40));
+    sim.steps(1);
+    assert_eq!(sim.phase(), ProfilePhase::Playing);
+    assert_eq!(sim.balance(), Some(40));
+    assert!(sim.run().distance > 0.0);
+}
+
+#[test]
+fn without_a_profile_no_drive_starts_until_a_valid_name_is_saved() {
+    let store = MemoryStore::default();
+    let mut sim = Sim::with_store(store.clone());
+    sim.steps(20);
+    assert_eq!(sim.phase(), ProfilePhase::Creating);
+    assert_eq!(sim.run().distance, 0.0);
+
+    sim.submit_name("   ");
+    sim.steps(2);
+    assert_eq!(sim.phase(), ProfilePhase::Creating);
+    assert!(sim.draft().error.is_some());
+    assert!(store.profiles().is_empty());
+
+    sim.submit_name("  Ada ");
+    sim.steps(2);
+    assert_eq!(sim.phase(), ProfilePhase::Playing);
+    assert_eq!(store.profiles()[0].name.as_str(), "Ada");
+    assert_eq!(sim.balance(), Some(0));
+    sim.steps(1);
+    assert!(sim.run().distance > 0.0);
+}
+
+#[test]
+fn every_drive_is_credited_exactly_once() {
+    let store = MemoryStore::with_profile("Ada", 5);
+    let mut sim = Sim::with_store(store.clone());
+    sim.steps(1);
+    sim.quiet();
+
+    sim.abandon_at(1_234.0);
+    assert_eq!(store.coins(), 5 + 12);
+
+    sim.run_mut().lives = 1;
+    sim.run_mut().distance = 5_000.0;
+    sim.car(PLAYER_START, 300.0);
+    sim.steps(1);
+    assert!(sim.run().finished);
+    let earned = sim.run().coins();
+    assert_eq!(earned, 50);
+    assert_eq!(store.coins(), 17 + earned);
+    assert_eq!(sim.balance(), Some(17 + earned));
+
+    // Restarting after game over and quitting after that add nothing.
+    sim.controls().restart = true;
+    sim.steps(3);
+    sim.0.world_mut().write_message(AppExit::Success);
+    sim.steps(1);
+    assert_eq!(store.coins(), 17 + earned);
+    assert!(!sim.account().saving());
+}
+
+#[test]
+fn quitting_mid_drive_credits_it_before_exit() {
+    let store = MemoryStore::with_profile("Ada", 0);
+    let mut sim = Sim::with_store(store.clone());
+    sim.steps(1);
+    sim.quiet();
+    sim.run_mut().distance = 2_000.0;
+    sim.0.world_mut().write_message(AppExit::Success);
+    sim.steps(1);
+    assert_eq!(store.coins(), 20);
+}
+
+#[test]
+fn failed_credits_are_kept_and_retried_at_the_next_drive_end() {
+    let store = MemoryStore::with_profile("Ada", 0);
+    let mut sim = Sim::with_store(store.clone());
+    sim.steps(1);
+    sim.quiet();
+    store.fail_with(Some(StoreError::Unavailable("disk full".into())));
+    sim.abandon_at(1_000.0);
+    assert!(sim.account().saving());
+    assert!(sim.account().problem.is_some());
+    assert_eq!(store.coins(), 0);
+
+    store.fail_with(None);
+    sim.steps(10);
+    assert!(sim.account().saving());
+    sim.abandon_at(500.0);
+    // One storage operation per frame: the retried credit, then the new one.
+    assert_eq!(store.coins(), 10);
+    sim.steps(1);
+    assert_eq!(store.coins(), 15);
+    assert!(!sim.account().saving());
+    assert!(sim.account().problem.is_none());
+}
+
+#[test]
+fn unreadable_storage_leaves_the_game_playable_without_saving() {
+    let store = MemoryStore::default();
+    store.fail_with(Some(StoreError::Invalid("corrupt".into())));
+    let mut sim = Sim::with_store(store);
+    sim.steps(1);
+    assert_eq!(sim.phase(), ProfilePhase::Playing);
+    assert!(sim.account().profile.is_none());
+    assert!(sim.account().problem.is_some());
+    assert!(sim.run().distance > 0.0);
+    sim.abandon_at(3_000.0);
+    assert!(!sim.account().saving());
+}
+
+#[test]
+fn sqlite_profile_and_coins_survive_restarting_the_game() {
+    let dir = TempDir::new();
+    let store = || SqliteStore::new(Some(dir.file()));
+
+    let mut sim = Sim::with_store(store());
+    sim.until("loading", |sim| sim.phase() == ProfilePhase::Creating);
+    sim.submit_name("Ada");
+    sim.until("creating", |sim| sim.phase() == ProfilePhase::Playing);
+    sim.quiet();
+    sim.abandon_at(4_321.0);
+    sim.until("crediting", |sim| !sim.account().saving());
+    assert_eq!(sim.balance(), Some(43));
+    drop(sim);
+
+    let mut sim = Sim::with_store(store());
+    sim.until("reloading", |sim| sim.phase() == ProfilePhase::Playing);
+    let profile = sim.account().profile.clone().unwrap();
+    assert_eq!(profile.name.as_str(), "Ada");
+    assert_eq!(profile.coins, 43);
 }
