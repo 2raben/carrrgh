@@ -45,3 +45,4 @@ write a new record that supersedes the old one instead of deleting it.
 | [0004 — Drive in road-relative coordinates with swept collisions](0004-drive-in-road-relative-coordinates.md) | accepted |
 | [0005 — Spawn continuous random traffic with predictive spacing checks](0005-spawn-continuous-random-traffic.md) | accepted; amends 0004; amended by 0006 |
 | [0006 — Reserve lanes for signalled traffic manoeuvres](0006-reserve-lanes-for-signalled-traffic-manoeuvres.md) | accepted; amends 0005 |
+| [0007 — Persist profiles in SQLite behind an asynchronous store interface](0007-persist-profiles-behind-a-store-interface.md) | accepted |

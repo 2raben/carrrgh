@@ -9,9 +9,11 @@ The first prototype replaces the starter platformer and implements the
 hand-drawn idea. It has one straight road, continuous random traffic, a rechargeable
 boost, damage protection, game over and immediate restart. The
 [power-ups and shields pitch](pitches/power-ups/pitch--power-ups-and-shields.md)
-adds rare hearts that restore a life and a shield that absorbs the next hit.
+adds rare hearts that restore a life and a shield that absorbs the next hit. The
+[coins and player profile pitch](pitches/coins/pitch--coins-and-player-profile.md)
+turns driven distance into coins that are saved for a local player.
 
 The next useful work is play-testing: steering feel, reaction time, traffic
 readability and whether boost creates interesting choices. Additional vehicles,
-tracks, upgrades and saved scores are outside this first pitch. Shape any such
+tracks, upgrades, spending coins and saved scores are not implemented. Shape any such
 extension separately before implementing it.

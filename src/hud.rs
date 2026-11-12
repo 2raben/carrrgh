@@ -1,4 +1,6 @@
-//! Distance, three hearts, held shield, boost gauge, and restart instructions.
+//! Player and coins, distance, three hearts, held shield, boost gauge, restart
+//! instructions, and the create-player screen.
+use crate::profile::{Account, NameDraft, ProfilePhase};
 use crate::run::Run;
 use crate::visuals::palette;
 use bevy::prelude::*;
@@ -13,23 +15,33 @@ struct BoostBar;
 struct Heart(u8);
 #[derive(Component)]
 struct ShieldIcon;
+#[derive(Component)]
+struct Wallet;
+#[derive(Component)]
+struct StorageNote;
+#[derive(Component)]
+struct Setup;
 
 pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, show_run);
+            .add_systems(Update, (show_run, show_wallet, show_finish, show_setup));
     }
 }
 
 fn text(content: impl Into<String>, size: f32) -> impl Bundle {
+    colored_text(content, size, palette::TEXT)
+}
+
+fn colored_text(content: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(content),
         TextFont {
             font_size: FontSize::Px(size),
             ..default()
         },
-        TextColor(palette::TEXT),
+        TextColor(color),
     )
 }
 
@@ -127,6 +139,8 @@ fn spawn_hud(mut commands: Commands) {
         children![
             text("CAR DRIVE", 28.0),
             text("FIND YOUR WAY", 13.0),
+            (Wallet, text("", 16.0)),
+            (StorageNote, colored_text("", 13.0, palette::PROTECTION)),
             (
                 Node {
                     column_gap: Val::Px(12.0),
@@ -174,12 +188,22 @@ fn spawn_hud(mut commands: Commands) {
         TextLayout::justify(Justify::Center),
         Visibility::Hidden,
     ));
+    commands.spawn((
+        Setup,
+        panel(Node {
+            top: Val::Percent(30.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        }),
+        text("", 26.0),
+        TextLayout::justify(Justify::Center),
+    ));
 }
 
 fn show_run(
     run: Res<Run>,
-    mut progress: Query<&mut Text, (With<Progress>, Without<FinishCue>)>,
-    mut finish: Query<(&mut Text, &mut Visibility), With<FinishCue>>,
+    mut progress: Query<&mut Text, With<Progress>>,
     mut bars: Query<&mut Node, With<BoostBar>>,
     mut hearts: Query<(&Heart, &mut BackgroundColor), Without<ShieldIcon>>,
     mut shield: Query<&mut BackgroundColor, With<ShieldIcon>>,
@@ -187,7 +211,7 @@ fn show_run(
     for mut text in &mut progress {
         text.0 = format!(
             "{:06.0} m\nLEVEL {} / 10",
-            run.distance / 10.0,
+            run.metres(),
             run.difficulty_step() + 1
         );
     }
@@ -208,15 +232,81 @@ fn show_run(
             palette::DIM
         };
     }
+}
+
+fn show_wallet(
+    run: Res<Run>,
+    account: Res<Account>,
+    mut wallet: Query<&mut Text, (With<Wallet>, Without<StorageNote>)>,
+    mut note: Query<&mut Text, With<StorageNote>>,
+) {
+    for mut text in &mut wallet {
+        text.0 = match &account.profile {
+            Some(profile) => format!(
+                "{}\n{} COINS  +{}",
+                profile.name.as_str(),
+                profile.coins,
+                run.coins()
+            ),
+            None => format!("+{} COINS", run.coins()),
+        };
+    }
+    for mut text in &mut note {
+        text.0 = account.problem.clone().unwrap_or_default();
+    }
+}
+
+/// The balance is shown only once storage confirmed this drive's credit.
+fn show_finish(
+    run: Res<Run>,
+    account: Res<Account>,
+    mut finish: Query<(&mut Text, &mut Visibility), With<FinishCue>>,
+) {
     for (mut text, mut visibility) in &mut finish {
-        if run.finished {
-            text.0 = format!(
-                "END OF THE ROAD\n{:.0} metres\nR / Select to drive again",
-                run.distance / 10.0
-            );
-            *visibility = Visibility::Inherited;
-        } else {
+        if !run.finished {
             *visibility = Visibility::Hidden;
+            continue;
         }
+        let balance = match (&account.problem, &account.profile) {
+            _ if account.saving() && account.problem.is_none() => "Saving coins...".to_owned(),
+            (Some(problem), _) => problem.clone(),
+            (None, Some(profile)) => format!("Balance: {} coins", profile.coins),
+            (None, None) => String::new(),
+        };
+        text.0 = format!(
+            "END OF THE ROAD\n{:.0} metres   +{} coins\n{balance}\nR / Select to drive again",
+            run.metres(),
+            run.coins()
+        );
+        *visibility = Visibility::Inherited;
+    }
+}
+
+fn show_setup(
+    phase: Res<State<ProfilePhase>>,
+    draft: Res<NameDraft>,
+    mut setup: Query<(&mut Text, &mut Visibility), With<Setup>>,
+) {
+    for (mut text, mut visibility) in &mut setup {
+        let content = match phase.get() {
+            ProfilePhase::Playing => {
+                *visibility = Visibility::Hidden;
+                continue;
+            }
+            ProfilePhase::Loading => "Loading player...".to_owned(),
+            ProfilePhase::Creating => {
+                let status = if draft.saving {
+                    "Saving..."
+                } else {
+                    draft.error.as_deref().unwrap_or("")
+                };
+                format!(
+                    "NEW PLAYER\n\n{}_\n\nType your name, then Enter\nController: South / Start\n{status}",
+                    draft.text
+                )
+            }
+        };
+        text.0 = content;
+        *visibility = Visibility::Inherited;
     }
 }

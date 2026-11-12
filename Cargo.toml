@@ -14,6 +14,11 @@ bevy = { version = "0.20.1", default-features = false, features = [
 ] }
 fastrand = "2.5.0"
 
+# Native profile storage (ADR 0007); a browser build needs another backend.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dirs = "7.0.0"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+
 [profile.dev]
 opt-level = 1
 

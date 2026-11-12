@@ -3,16 +3,19 @@
 The application implements [Car Drive](../pitches/car-drive/pitch--car-movements.md),
 a three-lane arcade driving game replacing the starter platformer, with the
 [power-ups and shields](../pitches/power-ups/pitch--power-ups-and-shields.md)
-extension and [lane changes and trucks](../pitches/traffic/pitch--lane-changes-and-trucks.md).
+extension, [lane changes and trucks](../pitches/traffic/pitch--lane-changes-and-trucks.md),
+and [coins and a player profile](../pitches/coins/pitch--coins-and-player-profile.md).
 It uses Rust 2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml)
 and [Cargo.lock](../../Cargo.lock). Traffic and pickup randomness uses `fastrand` 2.5.0.
+Native profile storage uses `rusqlite` 0.41 with bundled SQLite and `dirs` 7.0
+([ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md)).
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for checks and
 [ADRs](decisions/README.md) for design history.
 
 ## Simulation and presentation
 
-[src/main.rs](../../src/main.rs) composes the simulation, input, visuals, camera,
-and HUD plugins. Simulation runs headless under `MinimalPlugins`, following
+[src/main.rs](../../src/main.rs) composes the simulation, profile, input, visuals,
+camera, and HUD plugins, and gives the profile plugin the SQLite store. Simulation runs headless under `MinimalPlugins`, following
 [ADR 0002](decisions/0002-keep-the-simulation-headless-behind-a-controls-resource.md).
 Only input reads devices; only presentation writes `Transform`.
 
@@ -22,18 +25,21 @@ Only input reads devices; only presentation writes `Transform`.
 | [level.rs](../../src/level.rs) | Road bounds, lane centres, traffic components, vehicle kinds, lane reservations, random spawning, signalled lane changes, movement and cleanup |
 | [pickups.rs](../../src/pickups.rs) | Heart and shield pickups: rare random spawning, lane clearance, movement and collection |
 | [player.rs](../../src/player.rs) | `Controls`, car-centred `Position`/`PreviousPosition`, movement tuning, lateral steering |
-| [run.rs](../../src/run.rs) | Distance, energy, protection, held shield, swept collision, game over and restart |
-| [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate` |
+| [run.rs](../../src/run.rs) | Distance, coins, energy, protection, held shield, swept collision, game over, restart and the `RunEnded` message |
+| [profile.rs](../../src/profile.rs) | `ProfilePhase` state, loading or creating the profile, queued coin credits, background storage jobs and the exit flush |
+| [storage.rs](../../src/storage.rs) | `ProfileStore` contract and its data types; [sqlite.rs](../../src/storage/sqlite.rs) for native builds, [memory.rs](../../src/storage/memory.rs) for tests |
+| [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate`; name typing while creating a player |
 | [visuals.rs](../../src/visuals.rs) | Procedural car, truck and pickup sprites, turn signals, lane marks, interpolation, boost exhaust, shield bubble and protection outline |
 | [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
-| [hud.rs](../../src/hud.rs) | Hearts, held shield, distance in metres, difficulty level, boost gauge, controls and game-over cue |
+| [hud.rs](../../src/hud.rs) | Player name, coin balance and drive coins, storage problems, hearts, held shield, distance in metres, difficulty level, boost gauge, controls, game-over cue and create-player screen |
 | [tests.rs](../../src/tests.rs) | Deterministic tests of the actual simulation |
 
 ## Fixed-step flow
 
 At Bevy's default 64 Hz, `GameSystems` chains:
 
-1. Consume the latched restart request. Reset all run state including the held
+1. If a restart is latched, report the current drive as ended (unless it was
+   already reported at game over). Then consume the latched restart request. Reset all run state including the held
    shield, the traffic timer, the pickup distance, player current/previous positions
    and controls; reseed randomness and despawn traffic and pickups. Skip driving
    for that tick so the reset state is exact.
@@ -45,6 +51,10 @@ At Bevy's default 64 Hz, `GameSystems` chains:
    Chaining applies deferred spawns before movement and deferred removals before
    the next tick. Collection precedes collisions, so a pickup reached in the same
    tick as a car already counts.
+3. If the drive is over, report it as ended, once.
+
+The profile plugin runs `GameSystems` only in `ProfilePhase::Playing`; without
+the plugin, as in most headless tests, the drive starts immediately.
 
 Held steering and boost apply each tick; restart is consumed once. Game over gates
 simulation itself, not just input. In `PostUpdate`, positions and road distance
@@ -165,6 +175,38 @@ These choices supersede platformer movement in
 [ADR 0004](decisions/0004-drive-in-road-relative-coordinates.md). Tuning values are
 initial play-test values, not claims of final balance.
 
+## Profiles and coins
+
+A drive earns one coin per 10 metres, rounded down; boost, difficulty and hits do
+not change the rate. `Run` reports the drive's end once through a `RunEnded`
+message: at game over, when restarting mid-drive, or, from the profile plugin,
+when the app exits during a drive. The HUD shows the player's name, the confirmed
+balance and the coins of the current drive.
+
+`ProfilePhase` starts in `Loading`. The stored profile, if any, moves it to
+`Playing`. Without one it moves to `Creating`: input stops sampling `Controls`
+and instead edits a `NameDraft` (prefilled with "Driver"; text, Backspace,
+Enter, or controller South/Start to confirm). Names are trimmed, 1–16 characters
+and without control characters. The drive starts once the store confirms the new
+profile; a failed save is shown and can be retried. If loading fails (unreadable,
+foreign or newer file), the game plays without saving and the HUD says so.
+
+Each `RunEnded` with coins queues a `RunCredit` with a random run id for the
+current profile. One storage operation runs at a time on `IoTaskPool`; results
+apply in `Update`, so the credits are confirmed in order. A failed credit stays at
+the front of the queue, the problem is shown, and it is retried at the next drive's
+end or on exit. The game-over cue shows the new balance only after confirmation.
+On `AppExit`, the `Last` schedule waits for the running operation and writes the
+outstanding credits synchronously.
+
+`SqliteStore` keeps `profiles.sqlite3` in `$CAR_DRIVE_DATA_DIR` or in
+`car-drive` under the platform data directory (for example
+`~/.local/share/car-drive` on Linux). It opens lazily, initialises an empty file
+to schema 1 and refuses other files without writing to them. A credit inserts its
+run id and updates the balance in one transaction; a repeated run id changes
+nothing. Stored data is validated again on load. See
+[ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md).
+
 ## Validation and conventions
 
 `mise run check` runs formatting, Clippy, build, and tests in the project Nix shell
@@ -177,7 +219,13 @@ reproducible random layouts, continuous individual spawning, and same-lane spaci
 cycling. Pickup tests cover heart and shield effects and limits, shields with
 protection and the last heart, collection at extreme speed, restart, the clearance
 prediction, rarity, useful kinds only, one pickup at a time, lane clearance with
-real traffic, and seeded reproducibility. Graphical play checks are still required for
+real traffic, and seeded reproducibility. Profile tests cover the coin rate,
+starting with a stored profile, no drive before a valid name is saved, exactly-once
+credits across game over, restart and exit, retrying failed credits, and playing on
+when storage is unreadable. SQLite tests cover reloading, idempotent and atomic
+credits, initialising empty files, refusing foreign, newer and non-database files
+unchanged, rejecting edited invalid names, and one end-to-end run through the
+plugin and the I/O pool. Graphical play checks are still required for
 readability, input mapping and feel; see the contribution guide.
 
 Keep game behavior in focused ECS systems. New dependencies, persisted formats or
