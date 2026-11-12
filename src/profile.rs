@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::state::app::StatesPlugin;
 use bevy::tasks::{BoxedFuture, IoTaskPool, Task, block_on, poll_once};
@@ -32,6 +33,7 @@ pub struct Storage(pub Arc<dyn ProfileStore>);
 /// The confirmed profile and the credits still waiting for storage.
 #[derive(Resource, Debug, Default)]
 pub struct Account {
+    pub online: bool,
     /// As last confirmed by storage; `None` while loading or playing without storage.
     pub profile: Option<Profile>,
     /// The latest storage failure, shown until an operation succeeds.
@@ -42,20 +44,26 @@ pub struct Account {
 }
 
 impl Account {
+    pub fn retry(&mut self) {
+        self.paused = false;
+    }
     /// Whether credited coins are still waiting for confirmation.
     pub fn saving(&self) -> bool {
         !self.pending.is_empty()
     }
 
-    fn enqueue(&mut self, coins: u64) {
+    fn enqueue(&mut self, coins: u64, proof: Option<crate::drive_proof::DriveProof>) {
         let Some(profile) = &self.profile else {
             return;
         };
-        if coins > 0 {
+        if coins > 0 || proof.is_some() {
             self.pending.push_back(RunCredit {
-                run: RunId::random(),
+                run: proof
+                    .as_ref()
+                    .map_or_else(RunId::random, |p| RunId(p.ticket.clone())),
                 profile: profile.id.clone(),
                 coins,
+                proof,
             });
         }
         self.paused = false;
@@ -142,7 +150,10 @@ impl Plugin for ProfilePlugin {
             app.add_plugins(StatesPlugin);
         }
         app.insert_resource(Storage(self.store.clone()))
-            .init_resource::<Account>()
+            .insert_resource(Account {
+                online: self.store.online(),
+                ..default()
+            })
             .init_resource::<NameDraft>()
             .init_resource::<StorageJob>()
             .init_state::<ProfilePhase>()
@@ -189,9 +200,13 @@ fn create_profile(
     }
 }
 
-fn queue_credits(mut ended: MessageReader<RunEnded>, mut account: ResMut<Account>) {
+fn queue_credits(
+    mut ended: MessageReader<RunEnded>,
+    mut account: ResMut<Account>,
+    recording: Res<crate::drive_proof::Recording>,
+) {
     for run in ended.read() {
-        account.enqueue(run.coins);
+        account.enqueue(run.coins, recording.proof());
     }
 }
 
@@ -233,7 +248,11 @@ fn apply(
         Outcome::Loaded(Ok(None)) => phase.set(ProfilePhase::Creating),
         Outcome::Loaded(Err(error)) => {
             warn!("Playing without saving: {error}");
-            account.problem = Some(format!("Coins are not saved: {error}"));
+            account.problem = Some(if account.online {
+                format!("Market unavailable: {error}")
+            } else {
+                format!("Coins are not saved: {error}")
+            });
             phase.set(ProfilePhase::Playing);
         }
         Outcome::Created(Err(error)) => {
@@ -256,15 +275,21 @@ fn apply(
 
 /// Quitting ends the current drive. Credits are written before the app exits,
 /// since a background task would not outlive it.
+#[derive(SystemParam)]
+struct ExitDrive<'w> {
+    recording: Res<'w, crate::drive_proof::Recording>,
+    run: ResMut<'w, Run>,
+}
 fn flush_on_exit(
+    drive: ExitDrive,
     mut exits: MessageReader<AppExit>,
     storage: Res<Storage>,
-    mut run: ResMut<Run>,
     mut account: ResMut<Account>,
     mut job: ResMut<StorageJob>,
     mut draft: ResMut<NameDraft>,
     mut phase: ResMut<NextState<ProfilePhase>>,
 ) {
+    let ExitDrive { recording, mut run } = drive;
     if exits.read().count() == 0 {
         return;
     }
@@ -272,7 +297,7 @@ fn flush_on_exit(
         apply(outcome, &mut account, &mut draft, &mut phase);
     }
     if !std::mem::replace(&mut run.reported, true) {
-        account.enqueue(run.coins());
+        account.enqueue(run.coins(), recording.proof());
     }
     while let Some(credit) = account.pending.front().cloned() {
         let outcome = Outcome::Credited(block_on(storage.0.credit(credit)));

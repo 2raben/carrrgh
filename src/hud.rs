@@ -34,7 +34,7 @@ fn text(content: impl Into<String>, size: f32) -> impl Bundle {
     colored_text(content, size, palette::TEXT)
 }
 
-fn colored_text(content: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+pub(crate) fn colored_text(content: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(content),
         TextFont {
@@ -274,7 +274,7 @@ fn show_finish(
             (None, None) => String::new(),
         };
         text.0 = format!(
-            "END OF THE ROAD\n{:.0} metres   +{} coins\n{balance}\nR / Select to drive again",
+            "END OF THE ROAD\n{:.0} metres   +{} coins\n{balance}\nR / Select to drive again   G / Start for garage",
             run.metres(),
             run.coins()
         );

@@ -48,4 +48,4 @@ What this pitch explicitly does not include.
 | [Power-ups and shields](power-ups/pitch--power-ups-and-shields.md) | implemented |
 | [Traffic — lane changes and trucks](traffic/pitch--lane-changes-and-trucks.md) | implemented |
 | [Coins and player profile](coins/pitch--coins-and-player-profile.md) | implemented |
-| [Garage, vehicle tuning and marketplace](vehicles/pitch--garage-tuning-and-marketplace.md) | proposed |
+| [Garage, vehicle tuning and marketplace](vehicles/pitch--garage-tuning-and-marketplace.md) | implemented as a local garage and private shared test market |

@@ -1,7 +1,7 @@
 //! Road geometry and continuous random traffic; no rendering or device input.
 use bevy::prelude::*;
 
-use crate::pickups::{Pickup, keeps_clear};
+use crate::pickups::{Pickup, keeps_clear_for};
 use crate::player::{PlayerTuning, Position, PreviousPosition};
 use crate::run::Run;
 
@@ -102,7 +102,19 @@ pub struct TrafficFlow {
 /// Whether three cars can pack all lanes into a short longitudinal band.
 /// Relative car spacing is independent of player speed. The initial cruise
 /// speed gives the longest remaining lifetime, including later boost releases.
+#[cfg(test)]
 pub fn blocks_all_lanes(cars: [(Traffic, Vec2); 3], cruise_speed: f32) -> bool {
+    blocks_lanes_for(
+        cars,
+        &PlayerTuning {
+            cruise_speed,
+            ..default()
+        },
+    )
+}
+
+fn blocks_lanes_for(cars: [(Traffic, Vec2); 3], tuning: &PlayerTuning) -> bool {
+    let cruise_speed = tuning.cruise_speed;
     let covers_road = [
         [0, 1, 2],
         [0, 2, 1],
@@ -116,7 +128,9 @@ pub fn blocks_all_lanes(cars: [(Traffic, Vec2); 3], cruise_speed: f32) -> bool {
     if !covers_road {
         return false;
     }
-    let spacing = ESCAPE_SPACING
+    let spacing = ESCAPE_SPACING * (420. / tuning.steer_speed).max(1.)
+        + (tuning.size.y - CAR_SIZE.y).max(0.)
+        + (tuning.size.x - CAR_SIZE.x).max(0.)
         + cars
             .iter()
             .map(|(car, _)| car.kind.size().y - CAR_SIZE.y)
@@ -149,7 +163,11 @@ pub fn blocks_all_lanes(cars: [(Traffic, Vec2); 3], cruise_speed: f32) -> bool {
 
 /// Shared admission rule for spawning and reserving an adjacent lane. Requiring
 /// equal signed speeds in shared lanes also prevents future rear-end overlaps.
-fn traffic_is_safe(candidate: (Traffic, Vec2), others: &[(Traffic, Vec2)], cruise: f32) -> bool {
+fn traffic_is_safe(
+    candidate: (Traffic, Vec2),
+    others: &[(Traffic, Vec2)],
+    tuning: &PlayerTuning,
+) -> bool {
     for (i, &(car, at)) in others.iter().enumerate() {
         if (0..LANES.len()).any(|lane| candidate.0.occupies(lane) && car.occupies(lane))
             && (candidate.0.speed != car.speed || (candidate.1.y - at.y).abs() < TRAFFIC_SPACING)
@@ -157,7 +175,7 @@ fn traffic_is_safe(candidate: (Traffic, Vec2), others: &[(Traffic, Vec2)], cruis
             return false;
         }
         for &other in &others[i + 1..] {
-            if blocks_all_lanes([candidate, (car, at), other], cruise) {
+            if blocks_lanes_for([candidate, (car, at), other], tuning) {
                 return false;
             }
         }
@@ -196,13 +214,14 @@ pub fn spawn_traffic(
             .map(|(car, _)| car.speed)
             .unwrap_or_else(|| if flow.rng.bool() { 140.0 } else { -150.0 });
         let mut car = Traffic::new(lane, speed, kind);
-        if !traffic_is_safe((car, at), &existing, tuning.cruise_speed) {
+        if !traffic_is_safe((car, at), &existing, &tuning) {
             continue;
         }
         // Never close in on a pickup before the player can reach it.
-        if pickups.iter().any(|p| {
-            p.0.x == LANES[lane] && !keeps_clear(p.0.y, SPAWN_Y, speed, tuning.cruise_speed)
-        }) {
+        if pickups
+            .iter()
+            .any(|p| p.0.x == LANES[lane] && !keeps_clear_for(p.0.y, SPAWN_Y, speed, &tuning))
+        {
             continue;
         }
         car.change_cooldown = 0.1 + flow.rng.f32() * 0.35;
@@ -256,10 +275,10 @@ pub fn plan_lane_changes(
                 target_x: LANES[target] + (flow.rng.f32() * 2.0 - 1.0) * car.kind.max_offset(),
                 elapsed: 0.0,
             });
-            if !traffic_is_safe((candidate, position.0), &others, tuning.cruise_speed)
+            if !traffic_is_safe((candidate, position.0), &others, &tuning)
                 || pickups.iter().any(|p| {
                     p.0.x == LANES[target]
-                        && !keeps_clear(p.0.y, position.0.y, car.speed, tuning.cruise_speed)
+                        && !keeps_clear_for(p.0.y, position.0.y, car.speed, &tuning)
                 })
             {
                 continue;

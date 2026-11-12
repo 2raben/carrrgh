@@ -1,7 +1,7 @@
 //! Boost, distance, swept collisions, coins, and the lifecycle of a drive.
 use bevy::prelude::*;
 
-use crate::level::{CAR_SIZE, OnRoad, PLAYER_START, Traffic, TrafficFlow};
+use crate::level::{OnRoad, PLAYER_START, Traffic, TrafficFlow};
 use crate::pickups::PickupFlow;
 use crate::player::{Controls, Player, PlayerTuning, Position, PreviousPosition};
 
@@ -100,10 +100,16 @@ pub fn driving(run: Res<Run>) -> bool {
 
 /// A restart ends the current drive; one already over was reported then.
 pub fn report_abandoned_run(
-    controls: Res<Controls>,
+    mut controls: ResMut<Controls>,
     mut run: ResMut<Run>,
     mut ended: MessageWriter<RunEnded>,
 ) {
+    if std::mem::take(&mut controls.end_drive) {
+        run.finished = true;
+        run.boosting = false;
+        run.speed = 0.;
+        run.report_end(&mut ended);
+    }
     if controls.restart {
         run.report_end(&mut ended);
     }
@@ -210,7 +216,7 @@ pub fn collide(
             && swept_hit(
                 previous.0 - previous_player.0,
                 position.0 - player.0,
-                (CAR_SIZE + car.kind.size()) * 0.5,
+                (tuning.size + car.kind.size()) * 0.5,
             )
         {
             car.hit = true;

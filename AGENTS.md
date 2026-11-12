@@ -20,6 +20,10 @@ for significant choices and their rationale.
   and restart).
 - `src/input.rs`, `visuals.rs`, `camera.rs`, `hud.rs`: device input, drawing and
   render interpolation, the camera, and on-screen text.
+- `src/vehicles.rs`, `garage.rs`, `garage_ui.rs`, `vehicle_art.rs`: versioned
+  vehicle catalogue, garage workflow, menus and shared procedural vehicle shapes.
+- `src/market.rs`, `drive_proof.rs`, `storage/sqlite/`: private network market,
+  input replay verification and atomic ownership/coin transactions.
 - `src/tests.rs`: headless simulation tests of movement and the run rules.
 - `Cargo.toml` and `.cargo/config.toml`: dependencies, build profiles, and Linux
   linker settings.

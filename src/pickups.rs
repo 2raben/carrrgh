@@ -9,6 +9,7 @@ pub const PICKUP_SIZE: Vec2 = Vec2::splat(36.0);
 /// Minimum distance between a pickup and any car in its lane until it passes the player.
 pub const PICKUP_CLEARANCE: f32 = 240.0;
 /// Below this line a pickup has passed the player and no longer needs clearance.
+#[cfg(test)]
 pub const PICKUP_PASSED_Y: f32 = PLAYER_START.y - CAR_SIZE.y;
 /// Road distance between pickups, in world units (ten per metre).
 pub const PICKUP_INTERVAL: std::ops::Range<f32> = 4_000.0..9_000.0;
@@ -29,7 +30,6 @@ pub struct PickupFlow {
 }
 
 impl PickupFlow {
-    #[cfg(test)]
     pub fn with_seed(seed: u64) -> Self {
         Self::from_rng(fastrand::Rng::with_seed(seed))
     }
@@ -55,12 +55,26 @@ impl Default for PickupFlow {
 /// Whether a car in a pickup's lane stays at least `PICKUP_CLEARANCE` away
 /// until the pickup passes the player. Their gap changes only by the car's own
 /// speed; the initial cruise speed gives the pickup its longest lifetime.
+#[cfg(test)]
 pub fn keeps_clear(pickup_y: f32, car_y: f32, car_speed: f32, cruise_speed: f32) -> bool {
-    let lifetime = ((pickup_y - PICKUP_PASSED_Y) / cruise_speed).max(0.0);
+    keeps_clear_for(
+        pickup_y,
+        car_y,
+        car_speed,
+        &PlayerTuning {
+            cruise_speed,
+            ..default()
+        },
+    )
+}
+pub fn keeps_clear_for(pickup_y: f32, car_y: f32, car_speed: f32, tuning: &PlayerTuning) -> bool {
+    let passed_y = PLAYER_START.y - tuning.size.y.max(CAR_SIZE.y);
+    let lifetime = ((pickup_y - passed_y) / tuning.cruise_speed).max(0.0);
+    let clearance = PICKUP_CLEARANCE + (tuning.size.y - CAR_SIZE.y).max(0.0);
     let start = car_y - pickup_y;
     let end = start + car_speed * lifetime;
     // The gap is linear in time, so clear endpoints on one side clear the whole span.
-    start.signum() == end.signum() && start.abs().min(end.abs()) >= PICKUP_CLEARANCE
+    start.signum() == end.signum() && start.abs().min(end.abs()) >= clearance
 }
 
 pub fn spawn_pickups(
@@ -94,7 +108,7 @@ pub fn spawn_pickups(
         traffic
             .iter()
             .filter(|(car, _)| car.occupies(lane))
-            .all(|(car, p)| keeps_clear(SPAWN_Y, p.0.y, car.speed, tuning.cruise_speed))
+            .all(|(car, p)| keeps_clear_for(SPAWN_Y, p.0.y, car.speed, &tuning))
     }) else {
         return;
     };
@@ -124,6 +138,7 @@ pub fn move_pickups(
 /// A pickup that would have no effect stays on the road.
 pub fn collect_pickups(
     mut commands: Commands,
+    tuning: Res<PlayerTuning>,
     mut run: ResMut<Run>,
     players: Query<(&Position, &PreviousPosition), With<Player>>,
     pickups: Query<(Entity, &Pickup, &Position, &PreviousPosition)>,
@@ -135,7 +150,7 @@ pub fn collect_pickups(
         if !swept_hit(
             previous.0 - previous_player.0,
             position.0 - player.0,
-            (CAR_SIZE + PICKUP_SIZE) * 0.5,
+            (tuning.size + PICKUP_SIZE) * 0.5,
         ) {
             continue;
         }
