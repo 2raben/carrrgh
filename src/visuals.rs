@@ -1,5 +1,5 @@
 //! Procedural car and pickup sprites, scrolling lane marks, and render interpolation.
-use crate::level::{CAR_SIZE, ROAD_HALF_WIDTH, Traffic};
+use crate::level::{CAR_SIZE, ROAD_HALF_WIDTH, Traffic, VehicleKind};
 use crate::pickups::{PICKUP_SIZE, Pickup};
 use crate::player::{Player, Position, PreviousPosition};
 use crate::run::Run;
@@ -25,6 +25,13 @@ enum Effect {
     Shield,
 }
 
+#[derive(Component)]
+struct TurnSignal {
+    vehicle: Entity,
+    /// Side in road coordinates; the parent reverses local x for oncoming cars.
+    side: f32,
+}
+
 pub struct VisualsPlugin;
 impl Plugin for VisualsPlugin {
     fn build(&self, app: &mut App) {
@@ -33,7 +40,12 @@ impl Plugin for VisualsPlugin {
             .add_systems(Update, (decorate_cars, decorate_pickups))
             .add_systems(
                 PostUpdate,
-                (interpolate_positions, scroll_road, show_effects)
+                (
+                    interpolate_positions,
+                    scroll_road,
+                    show_effects,
+                    show_turn_signals,
+                )
                     .before(TransformSystems::Propagate),
             );
     }
@@ -101,6 +113,8 @@ type NewCars<'w, 's> = Query<
 fn decorate_cars(mut commands: Commands, cars: NewCars) {
     for (entity, position, traffic, player) in &cars {
         let oncoming = traffic.is_some_and(|car| car.speed < 0.0);
+        let truck = traffic.is_some_and(|car| car.kind == VehicleKind::Truck);
+        let size = traffic.map_or(CAR_SIZE, |car| car.kind.size());
         let color = if player {
             palette::BLUE
         } else if oncoming {
@@ -119,7 +133,7 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
             .with_children(|body| {
                 body.spawn(sprite(
                     Color::srgba(0.0, 0.0, 0.0, 0.3),
-                    CAR_SIZE + Vec2::splat(6.0),
+                    size + Vec2::splat(6.0),
                     Vec2::new(4.0, -4.0),
                     -0.2,
                 ));
@@ -155,44 +169,95 @@ fn decorate_cars(mut commands: Commands, cars: NewCars) {
                         Visibility::Hidden,
                     ));
                 }
-                for x in [-24.0, 24.0] {
-                    for y in [-24.0, 24.0] {
+                for side in [-1.0, 1.0] {
+                    for end in [-1.0, 1.0] {
                         body.spawn(sprite(
                             Color::srgb(0.035, 0.045, 0.06),
                             Vec2::new(8.0, 20.0),
-                            Vec2::new(x, y),
+                            Vec2::new(side * (size.x * 0.5 + 2.0), end * size.y * 0.31),
                             0.0,
                         ));
                     }
                 }
-                body.spawn(sprite(color, CAR_SIZE, Vec2::ZERO, 0.1));
+                body.spawn(sprite(color, size, Vec2::ZERO, 0.1));
                 body.spawn(sprite(
                     Color::srgb(0.06, 0.14, 0.21),
-                    Vec2::new(34.0, 17.0),
-                    Vec2::new(0.0, 15.0),
+                    Vec2::new(size.x - 10.0, 17.0),
+                    Vec2::new(0.0, if truck { 49.0 } else { 15.0 }),
                     0.2,
                 ));
-                body.spawn(sprite(
-                    Color::srgb(0.1, 0.22, 0.29),
-                    Vec2::new(30.0, 11.0),
-                    Vec2::new(0.0, -24.0),
-                    0.2,
-                ));
-                for x in [-15.0, 15.0] {
+                if truck {
+                    body.spawn(sprite(
+                        Color::srgb(0.46, 0.55, 0.61),
+                        Vec2::new(size.x - 10.0, 94.0),
+                        Vec2::new(0.0, -17.0),
+                        0.2,
+                    ));
+                    for y in [-48.0, -18.0, 12.0] {
+                        body.spawn(sprite(
+                            Color::srgb(0.63, 0.70, 0.73),
+                            Vec2::new(size.x - 18.0, 3.0),
+                            Vec2::new(0.0, y),
+                            0.3,
+                        ));
+                    }
+                } else {
+                    body.spawn(sprite(
+                        Color::srgb(0.1, 0.22, 0.29),
+                        Vec2::new(30.0, 11.0),
+                        Vec2::new(0.0, -24.0),
+                        0.2,
+                    ));
+                }
+                for side in [-1.0, 1.0] {
+                    let x = side * (size.x * 0.5 - 7.0);
                     body.spawn(sprite(
                         Color::srgb(1.0, 0.94, 0.65),
                         Vec2::new(9.0, 6.0),
-                        Vec2::new(x, 34.0),
+                        Vec2::new(x, size.y * 0.5 - 5.0),
                         0.2,
                     ));
                     body.spawn(sprite(
                         Color::srgb(0.8, 0.12, 0.14),
                         Vec2::new(8.0, 4.0),
-                        Vec2::new(x, -36.0),
+                        Vec2::new(x, -size.y * 0.5 + 3.0),
                         0.2,
                     ));
+                    if !player {
+                        for end in [-1.0, 1.0] {
+                            body.spawn((
+                                TurnSignal {
+                                    vehicle: entity,
+                                    side: if oncoming { -side } else { side },
+                                },
+                                sprite(
+                                    Color::srgb(1.0, 0.62, 0.02),
+                                    Vec2::new(10.0, 10.0),
+                                    Vec2::new(
+                                        side * (size.x * 0.5 - 2.0),
+                                        end * (size.y * 0.5 - 11.0),
+                                    ),
+                                    0.4,
+                                ),
+                                Visibility::Hidden,
+                            ));
+                        }
+                    }
                 }
             });
+    }
+}
+
+fn show_turn_signals(traffic: Query<&Traffic>, mut signals: Query<(&TurnSignal, &mut Visibility)>) {
+    for (signal, mut visibility) in &mut signals {
+        *visibility = if traffic
+            .get(signal.vehicle)
+            .is_ok_and(|car| car.signal_side() == Some(signal.side))
+        {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 

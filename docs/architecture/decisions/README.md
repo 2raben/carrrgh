@@ -43,4 +43,5 @@ write a new record that supersedes the old one instead of deleting it.
 | [0002 — Keep the simulation headless behind a `Controls` resource](0002-keep-the-simulation-headless-behind-a-controls-resource.md) | accepted |
 | [0003 — Pin the toolchain and run project tasks with mise](0003-run-project-tasks-with-mise.md) | accepted |
 | [0004 — Drive in road-relative coordinates with swept collisions](0004-drive-in-road-relative-coordinates.md) | accepted |
-| [0005 — Spawn continuous random traffic with predictive spacing checks](0005-spawn-continuous-random-traffic.md) | accepted; amends 0004 |
+| [0005 — Spawn continuous random traffic with predictive spacing checks](0005-spawn-continuous-random-traffic.md) | accepted; amends 0004; amended by 0006 |
+| [0006 — Reserve lanes for signalled traffic manoeuvres](0006-reserve-lanes-for-signalled-traffic-manoeuvres.md) | accepted; amends 0005 |

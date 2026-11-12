@@ -46,3 +46,4 @@ What this pitch explicitly does not include.
 | --- | --- |
 | [Car Drive — car movements](car-drive/pitch--car-movements.md) | implemented; replaces the starter platformer |
 | [Power-ups and shields](power-ups/pitch--power-ups-and-shields.md) | implemented |
+| [Traffic — lane changes and trucks](traffic/pitch--lane-changes-and-trucks.md) | implemented |

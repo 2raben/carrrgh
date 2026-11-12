@@ -90,6 +90,14 @@ Check the affected behavior manually in Car Drive:
   slowly; opposing cars approach faster. Cars arrive individually on random lanes
   at varying intervals while earlier cars remain visible. Check that gaps remain
   usable, including when boosting and releasing boost.
+- Traffic sits at varied offsets within its lane. Amber indicators blink on the
+  intended side before and during adjacent lane changes, including oncoming cars.
+  Waiting on a lane marking must no longer be a safe strategy. Changes must not
+  overlap other traffic or close a pickup's reserved clearance.
+- The HUD advances a level every 1,000 metres, capped at level 10. From 4,000 metres,
+  check visibly wider, longer trucks, their cargo beds and matching collision boxes.
+  Truck lane changes should be slower. Game over freezes signals; restart returns
+  to level 1 with no trucks or old lane-change state.
 - Space boosts, the gauge drains, and release restores cruising and recharges.
   Depletion ends boost; release is required to boost again.
 - Hits cost one heart and show a steady protection outline. One overlapping car
