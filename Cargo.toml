@@ -15,15 +15,31 @@ bevy = { version = "0.20.1", default-features = false, features = [
 fastrand = "2.5.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "=1.0.140"
-getrandom = "0.4.3"
 
-# Native profile storage (ADR 0007); a browser build needs another backend.
+# Native profile storage (ADR 0007) and the private market (ADR 0009).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "7.0.0"
+getrandom = "0.4.3"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+
+# The browser build (`mise run web:build`) renders with WebGL2, which the `2d`
+# feature set already includes, and saves to the page's local storage (ADR 0011).
+# `fastrand` seeds traffic and IDs from the browser's crypto instead of a fixed seed.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.20.1", default-features = false, features = ["web"] }
+fastrand = { version = "2.5.0", features = ["js"] }
+web-sys = { version = "0.3.107", features = ["Storage", "Window"] }
 
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The browser build: small, because the page downloads it on every visit.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

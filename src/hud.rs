@@ -5,6 +5,13 @@ use crate::run::Run;
 use crate::visuals::palette;
 use bevy::prelude::*;
 
+/// Escape quits only natively (see `input::CAN_QUIT`); the browser tab is closed instead.
+const CONTROLS_HELP: &str = if crate::input::CAN_QUIT {
+    "A / D or Left / Right   Steer\nSPACE   Boost     R   Restart     ESC   Quit\nController: Stick / D-pad / South / Select"
+} else {
+    "A / D or Left / Right   Steer\nSPACE   Boost     R   Restart\nController: Stick / D-pad / South / Select"
+};
+
 #[derive(Component)]
 struct Progress;
 #[derive(Component)]
@@ -175,7 +182,14 @@ fn spawn_hud(mut commands: Commands) {
             ),
         ],
     ));
-    commands.spawn((panel(Node { bottom: Val::Px(20.0), left: Val::Px(20.0), ..default() }), text("A / D or Left / Right   Steer\nSPACE   Boost     R   Restart     ESC   Quit\nController: Stick / D-pad / South / Select", 14.0)));
+    commands.spawn((
+        panel(Node {
+            bottom: Val::Px(20.0),
+            left: Val::Px(20.0),
+            ..default()
+        }),
+        text(CONTROLS_HELP, 14.0),
+    ));
     commands.spawn((
         FinishCue,
         panel(Node {

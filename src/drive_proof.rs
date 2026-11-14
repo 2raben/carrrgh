@@ -5,7 +5,6 @@ use crate::player::Controls;
 use crate::run::Run;
 use crate::vehicles::Vehicle;
 use bevy::prelude::*;
-use bevy::time::TimeUpdateStrategy;
 use serde::{Deserialize, Serialize};
 
 pub const MAX_DRIVE_TICKS: usize = 64 * 60 * 20;
@@ -73,7 +72,9 @@ pub fn limit_online_drive(recording: Res<Recording>, mut run: ResMut<Run>) {
 }
 
 /// No client-supplied score is used. Reject frames beyond game over and replay
-/// only bounded, quantized Controls on the same fixed-step simulation.
+/// only bounded, quantized Controls on the same fixed-step simulation. Only the
+/// native market service verifies drives.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn verify(ticket: &DriveTicket, proof: &DriveProof) -> Result<u64, String> {
     if proof.ticket != ticket.id || proof.frames.len() > MAX_DRIVE_TICKS {
         return Err("Invalid drive proof".into());
@@ -81,7 +82,7 @@ pub fn verify(ticket: &DriveTicket, proof: &DriveProof) -> Result<u64, String> {
     ticket.vehicle.validate()?;
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, crate::simulation::SimulationPlugin))
-        .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+        .insert_resource(bevy::time::TimeUpdateStrategy::FixedTimesteps(1))
         .insert_resource(ticket.vehicle.tuning())
         .insert_resource(TrafficFlow {
             cooldown: 0.,
@@ -131,7 +132,7 @@ mod tests {
             };
             let mut app = App::new();
             app.add_plugins((MinimalPlugins, crate::simulation::SimulationPlugin))
-                .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
+                .insert_resource(bevy::time::TimeUpdateStrategy::FixedTimesteps(1))
                 .insert_resource(ticket.vehicle.tuning())
                 .insert_resource(Recording {
                     ticket: Some(ticket.clone()),

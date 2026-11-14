@@ -23,13 +23,17 @@ for significant choices and their rationale.
 - `src/vehicles.rs`, `garage.rs`, `garage_ui.rs`, `vehicle_art.rs`: versioned
   vehicle catalogue, garage workflow, menus and shared procedural vehicle shapes.
 - `src/market.rs`, `drive_proof.rs`, `storage/sqlite/`: private network market,
-  input replay verification and atomic ownership/coin transactions.
+  input replay verification and atomic ownership/coin transactions (native only).
+- `src/storage/document.rs`, `browser.rs`, `contract.rs`: the browser save as one
+  JSON document in `localStorage`, and garage scenarios shared with SQLite.
+- `web/index.html`, `.mise/tasks/web/`, `.github/workflows/`: the browser page,
+  its build, CI on pull requests and GitHub Pages on `main`.
 - `src/tests.rs`: headless simulation tests of movement and the run rules.
 - `Cargo.toml` and `.cargo/config.toml`: dependencies, build profiles, and Linux
   linker settings.
 - `shell.nix`: native libraries for NixOS; run Cargo and mise tasks inside `nix-shell` there.
 - `.mise/config.toml` and `.mise/tasks/`: the pinned toolchain and the `build`,
-  `test`, `run`, `check`, and `fmt` tasks.
+  `test`, `run`, `check`, `fmt`, `web:build` and `web:serve` tasks.
 - [docs/idea.md](docs/idea.md): game direction and longer-term possibilities.
 - [docs/pitches/](docs/pitches/README.md): bounded feature proposals and companion sketches.
 
@@ -72,9 +76,12 @@ unless intentionally updating dependencies.
 
 Follow the [contribution checks](CONTRIBUTING.md#setup-and-validation). For code
 changes, run `mise run check` (or the equivalent Cargo commands): formatting,
-Clippy, build, and tests. Verify visual or input changes with `mise run run` when a
-graphical environment is available. Add focused behavior or regression tests where
-they provide useful coverage; do not claim a successful build proves gameplay works.
+Clippy, build, and tests. Code under `cfg(target_arch = "wasm32")` also needs
+`cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings`. Verify
+visual or input changes with `mise run run` (and `mise run web:serve` for the
+browser) when a graphical environment is available. Add focused behavior or
+regression tests where they provide useful coverage; do not claim a successful
+build proves gameplay works.
 
 Documentation-only changes need source and relative-link checks plus
 `git diff --check`, not a full build. Report actual checks, failures, and unavailable

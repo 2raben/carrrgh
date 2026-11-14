@@ -264,8 +264,9 @@ mod tests {
     use super::*;
     use crate::storage::sqlite::{APPLICATION_ID, SCHEMA_V1, SqliteStore, TempDir};
     use crate::storage::{PlayerName, ProfileStore, RunCredit, RunId};
-    use crate::vehicles::{Change, Paint, Upgrade};
     use bevy::tasks::block_on;
+
+    // Garage rules shared with the save document are tested in `storage::contract`.
 
     fn account(store: &SqliteStore, name: &str, coins: u64) -> ProfileId {
         let p = block_on(store.create(PlayerName::parse(name).unwrap())).unwrap();
@@ -280,88 +281,6 @@ mod tests {
     }
     fn act(store: &SqliteStore, owner: &ProfileId, action: GarageAction) -> GarageSnapshot {
         block_on(store.garage(owner.clone(), GarageRequest::new(action))).unwrap()
-    }
-    #[test]
-    fn market_transfers_custom_car_and_pays_seller_exactly_once() {
-        let dir = TempDir::new();
-        let store = SqliteStore::new(Some(dir.file()));
-        let a = account(&store, "Ada", 100_000);
-        let b = account(&store, "Bob", 100_000);
-        let first = act(&store, &a, GarageAction::Refresh { page: 0 });
-        let id = first.active.clone();
-        act(
-            &store,
-            &a,
-            GarageAction::Configure {
-                vehicle: id.clone(),
-                change: Change::Buy(Upgrade::Motor1),
-            },
-        );
-        act(
-            &store,
-            &a,
-            GarageAction::Configure {
-                vehicle: id.clone(),
-                change: Change::Buy(Upgrade::Carbon),
-            },
-        );
-        act(
-            &store,
-            &a,
-            GarageAction::Configure {
-                vehicle: id.clone(),
-                change: Change::Paint(Paint::Red),
-            },
-        );
-        let bought = act(&store, &a, GarageAction::Buy(Model::BobbyCar));
-        let other = bought
-            .vehicles
-            .iter()
-            .find(|v| v.id != id)
-            .unwrap()
-            .id
-            .clone();
-        act(&store, &a, GarageAction::Select(other));
-        let sale = GarageRequest::new(GarageAction::Sell(id.clone()));
-        let sold = block_on(store.garage(a.clone(), sale.clone())).unwrap();
-        assert_eq!(sold.coins, 100_000 - 2990 - 55 + 17595);
-        assert_eq!(sold, block_on(store.garage(a.clone(), sale)).unwrap());
-        let purchased = act(&store, &b, GarageAction::BuyListing(id.clone()));
-        let car = purchased.vehicles.iter().find(|v| v.id == id).unwrap();
-        assert_eq!((car.paint, car.motor, car.carbon), (Paint::Red, 1, true));
-        assert_eq!(purchased.coins, 100_000 - 21793);
-        let reloaded = SqliteStore::new(Some(dir.file()));
-        let after = act(&reloaded, &a, GarageAction::Refresh { page: 0 });
-        assert_eq!(after.coins, sold.coins);
-        assert_eq!(after.vehicles.len(), 1); // No repeated starter grant.
-        assert!(after.listings.is_empty());
-    }
-    #[test]
-    fn rejection_is_atomic_and_transaction_ids_cannot_be_repurposed() {
-        let dir = TempDir::new();
-        let store = SqliteStore::new(Some(dir.file()));
-        let a = account(&store, "Ada", 55);
-        let original = act(&store, &a, GarageAction::Refresh { page: 0 });
-        for action in [
-            GarageAction::Sell(original.active.clone()),
-            GarageAction::Buy(Model::Jesko),
-            GarageAction::Configure {
-                vehicle: original.active.clone(),
-                change: Change::Buy(Upgrade::Motor2),
-            },
-        ] {
-            assert!(block_on(store.garage(a.clone(), GarageRequest::new(action))).is_err());
-            assert_eq!(act(&store, &a, GarageAction::Refresh { page: 0 }), original);
-        }
-        let mut request = GarageRequest::new(GarageAction::Buy(Model::BobbyCar));
-        let bought = block_on(store.garage(a.clone(), request.clone())).unwrap();
-        assert_eq!(bought.coins, 0);
-        assert_eq!(
-            block_on(store.garage(a.clone(), request.clone())).unwrap(),
-            bought
-        );
-        request.action = GarageAction::Buy(Model::Corsa);
-        assert!(block_on(store.garage(a, request)).is_err());
     }
     #[test]
     fn concurrent_buyers_cannot_duplicate_a_listing() {

@@ -1,91 +1,73 @@
 //! An in-memory store for headless tests; every operation completes immediately.
-use std::collections::HashSet;
-use std::future::ready;
+//!
+//! It keeps the encoded save document text, like the browser keeps it in
+//! `localStorage`, so tests exercise the same open, apply and write path.
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use bevy::tasks::BoxedFuture;
+use super::document::{self, DocumentStore, SaveDocument, Slot};
+use super::{PlayerName, Profile, RunCredit, RunId, StoreError, StoreResult};
 
-use super::{PlayerName, Profile, ProfileId, ProfileStore, RunCredit, RunId, StoreError};
+pub type MemoryStore = DocumentStore<MemorySlot>;
 
 #[derive(Clone, Default)]
-pub struct MemoryStore(Arc<Mutex<State>>);
+pub struct MemorySlot(Arc<Mutex<State>>);
 
 #[derive(Default)]
 struct State {
-    profiles: Vec<Profile>,
-    credited: HashSet<RunId>,
+    text: Option<String>,
     failure: Option<StoreError>,
+}
+
+impl MemorySlot {
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.0.lock().unwrap()
+    }
+}
+
+impl Slot for MemorySlot {
+    fn update<T>(&self, work: impl FnOnce(&mut SaveDocument) -> StoreResult<T>) -> StoreResult<T> {
+        let mut state = self.state();
+        if let Some(failure) = state.failure.clone() {
+            return Err(failure);
+        }
+        let (value, text) = document::apply(document::open(state.text.as_deref())?, work)?;
+        if text.is_some() {
+            state.text = text;
+        }
+        Ok(value)
+    }
 }
 
 impl MemoryStore {
     pub fn with_profile(name: &str, coins: u64) -> Self {
         let store = Self::default();
-        store.state().profiles.push(Profile {
-            id: ProfileId("p0".into()),
-            name: PlayerName::parse(name).unwrap(),
-            coins,
-        });
+        store
+            .0
+            .update(|d| {
+                let profile = d.create(PlayerName::parse(name).unwrap());
+                d.credit(&RunCredit {
+                    run: RunId::random(),
+                    profile: profile.id,
+                    coins,
+                    proof: None,
+                })
+            })
+            .unwrap();
         store
     }
 
     /// Makes every following operation fail until cleared.
     pub fn fail_with(&self, failure: Option<StoreError>) {
-        self.state().failure = failure;
+        self.0.state().failure = failure;
     }
 
     pub fn profiles(&self) -> Vec<Profile> {
-        self.state().profiles.clone()
+        document::open(self.0.state().text.as_deref())
+            .unwrap()
+            .profiles()
     }
 
     pub fn coins(&self) -> u64 {
-        self.state().profiles.first().map_or(0, |p| p.coins)
-    }
-
-    fn state(&self) -> MutexGuard<'_, State> {
-        self.0.lock().unwrap()
-    }
-
-    fn answer<T: Send + 'static>(
-        &self,
-        work: impl FnOnce(&mut State) -> Result<T, StoreError>,
-    ) -> BoxedFuture<'static, Result<T, StoreError>> {
-        let mut state = self.state();
-        let result = match state.failure.clone() {
-            Some(failure) => Err(failure),
-            None => work(&mut state),
-        };
-        Box::pin(ready(result))
-    }
-}
-
-impl ProfileStore for MemoryStore {
-    fn load(&self) -> BoxedFuture<'static, Result<Option<Profile>, StoreError>> {
-        self.answer(|state| Ok(state.profiles.first().cloned()))
-    }
-
-    fn create(&self, name: PlayerName) -> BoxedFuture<'static, Result<Profile, StoreError>> {
-        self.answer(|state| {
-            let profile = Profile {
-                id: ProfileId(format!("p{}", state.profiles.len())),
-                name,
-                coins: 0,
-            };
-            state.profiles.push(profile.clone());
-            Ok(profile)
-        })
-    }
-
-    fn credit(&self, credit: RunCredit) -> BoxedFuture<'static, Result<Profile, StoreError>> {
-        self.answer(|state| {
-            let profile = state
-                .profiles
-                .iter_mut()
-                .find(|p| p.id == credit.profile)
-                .ok_or(StoreError::UnknownProfile)?;
-            if state.credited.insert(credit.run) {
-                profile.coins += credit.coins;
-            }
-            Ok(profile.clone())
-        })
+        self.profiles().first().map_or(0, |p| p.coins)
     }
 }
