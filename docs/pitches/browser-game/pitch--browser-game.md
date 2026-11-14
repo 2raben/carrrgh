@@ -26,9 +26,8 @@ and the [architecture](../../architecture/README.md#browser-build-and-publishing
 describes the build. Two details differ from the shaping below. With a save, the
 game opens the garage first, as it does natively; G or "Drive / Start" begins the
 drive. The document keeps only the latest 256 garage receipts and credited runs,
-which is enough to guard the retry of the operation in flight. Making the
-repository public and choosing "GitHub Actions" as the Pages source are still
-manual steps.
+which is enough to guard the retry of the operation in flight. The repository
+is public; choosing "GitHub Actions" as the Pages source is still a manual step.
 
 # Solution
 
