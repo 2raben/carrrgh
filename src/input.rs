@@ -29,7 +29,7 @@ impl Plugin for InputPlugin {
                 menu_controls.run_if(in_state(ProfilePhase::Playing)),
                 sample_controls.run_if(not(creating.clone())),
                 edit_name.run_if(creating),
-                quit,
+                quit.run_if(|| CAN_QUIT),
             )
                 .after(InputSystems),
         );
@@ -116,6 +116,10 @@ fn edit_name(
         draft.submitted = true;
     }
 }
+
+/// Whether Escape outside the garage quits. In the browser, quitting would only
+/// freeze the page, so the player closes the tab instead.
+pub const CAN_QUIT: bool = cfg!(not(target_arch = "wasm32"));
 
 fn quit(keys: Res<ButtonInput<KeyCode>>, garage: Res<Garage>, mut exit: MessageWriter<AppExit>) {
     if keys.just_pressed(KeyCode::Escape) && !garage.open {

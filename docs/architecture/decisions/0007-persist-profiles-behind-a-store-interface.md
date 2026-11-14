@@ -2,7 +2,7 @@
 tags: [adr]
 status: accepted
 date: 2026-11-12
-amended-by: [0008-transact-vehicle-ownership-and-tuning.md, 0009-verify-drives-in-a-private-market-service.md]
+amended-by: [0008-transact-vehicle-ownership-and-tuning.md, 0009-verify-drives-in-a-private-market-service.md, 0011-keep-the-browser-save-as-one-document-in-local-storage.md]
 sources:
   - src/storage.rs
   - src/storage/sqlite.rs
@@ -20,6 +20,9 @@ Extended by [ADR 0008](0008-transact-vehicle-ownership-and-tuning.md) for garage
 transactions/schema 2 and [ADR 0009](0009-verify-drives-in-a-private-market-service.md)
 for a separate authoritative network backend. The original local-store rationale
 below remains applicable. SQLite now also lives in `src/storage/sqlite/` submodules.
+[ADR 0011](0011-keep-the-browser-save-as-one-document-in-local-storage.md) adds the
+browser backend this record anticipated: one JSON document in `localStorage`, not
+IndexedDB.
 
 ## Context
 

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Build the browser version into dist/web"
+set -euo pipefail
+out=dist/web
+cargo build --locked --profile web --target wasm32-unknown-unknown
+rm -rf "$out"
+mkdir -p "$out"
+wasm-bindgen --target web --no-typescript --out-dir "$out" --out-name car-drive \
+  target/wasm32-unknown-unknown/web/bevy-template.wasm
+wasm-opt -Os "$out/car-drive_bg.wasm" -o "$out/car-drive_bg.wasm"
+cp web/index.html "$out/"
+ls -l "$out"

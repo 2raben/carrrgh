@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Car Drive</title>
+    <!-- No favicon request; the page loads nothing but itself and the game. -->
+    <link rel="icon" href="data:,">
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #111316;
+        color: #e8e2d4;
+        font-family: system-ui, sans-serif;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      /* The playing field: the native window's 6:5 (960 × 800), as large as the window allows. */
+      #field {
+        position: relative;
+        width: min(100vw, calc(100vh * 6 / 5));
+        aspect-ratio: 6 / 5;
+      }
+      #car-drive {
+        display: block;
+        width: 100%;
+        height: 100%;
+        outline: none;
+      }
+      #status {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        margin: 0;
+        padding: 16px;
+        text-align: center;
+        font-size: 1.4rem;
+      }
+      #status[hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="field">
+      <canvas id="car-drive" tabindex="0"></canvas>
+      <p id="status">Loading …</p>
+    </div>
+    <script type="module">
+      const status = document.getElementById("status");
+      const canvas = document.getElementById("car-drive");
+
+      if (!document.createElement("canvas").getContext("webgl2")) {
+        status.textContent =
+          "This browser has no WebGL2. Car Drive runs in a current Firefox, Chrome or Safari.";
+      } else {
+        try {
+          const { default: init } = await import("./car-drive.js");
+          await init();
+          status.hidden = true;
+          // The keyboard goes to the game; a click on the field brings it back.
+          canvas.focus();
+        } catch (error) {
+          console.error(error);
+          status.textContent = "Car Drive could not start.";
+        }
+      }
+    </script>
+  </body>
+</html>

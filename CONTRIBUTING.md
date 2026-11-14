@@ -70,7 +70,22 @@ cargo build --locked
 cargo test --locked
 ```
 
-There are no CI workflows yet. Tests include unit tests beside each module and
+For changes that touch browser-only code (`cfg(target_arch = "wasm32")`), the web
+page or dependencies, also run:
+
+```sh
+cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+mise run web:serve   # builds dist/web and serves http://127.0.0.1:8080
+```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `mise run check`
+and Clippy for `wasm32` on every pull request. Every push to `main` runs
+[.github/workflows/pages.yml](.github/workflows/pages.yml): `mise run web:build`,
+then publishing `dist/web` to GitHub Pages at <https://2raben.github.io/carrrgh/>.
+Pages must use "GitHub Actions" as its source in the repository settings. The
+workflows have read-only rights by default; only the publish job may write Pages.
+
+Tests include unit tests beside each module and
 headless simulation tests in `src/tests.rs`, which step the real plugins at the
 fixed timestep. Prefer focused tests of game rules and ECS systems that can run
 without a window. Include regression coverage for meaningful bugs; avoid tests that
@@ -108,9 +123,16 @@ Check the affected behavior manually in Car Drive:
 - The third hit freezes traffic and distance and shows the result. Steering and
   boost do nothing until restart. R restores three hearts, full energy, initial
   position, zero distance and initial difficulty with a fresh random traffic sequence.
-- The left stick or D-pad steers; South boosts; Select restarts. Escape quits.
+- The left stick or D-pad steers; South boosts; Select restarts. Escape quits
+  natively and does nothing outside the garage in the browser.
 - Check a resized window for readable HUD and road; note that the fixed view
   stretches at unusual aspect ratios.
+
+For browser changes, check in current desktop Firefox and Chrome with
+`mise run web:serve`: the page shows "Loading …", then the game; a click gives the
+field the keyboard, and arrows, Space and Tab do not scroll or leave the page.
+Create a player, drive, buy, sell and buy back a car, reload: the player, balance,
+garage and listings remain, and the storage inspector shows `car-drive/save`.
 
 Record what was checked; if no graphical environment is available, report that
 limitation.

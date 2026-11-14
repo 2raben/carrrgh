@@ -5,18 +5,23 @@ a three-lane arcade driving game replacing the starter platformer, with the
 [power-ups and shields](../pitches/power-ups/pitch--power-ups-and-shields.md)
 extension, [lane changes and trucks](../pitches/traffic/pitch--lane-changes-and-trucks.md),
 and [coins and a player profile](../pitches/coins/pitch--coins-and-player-profile.md),
-plus the [garage, tuning and private marketplace experiment](../pitches/vehicles/pitch--garage-tuning-and-marketplace.md).
+plus the [garage, tuning and private marketplace experiment](../pitches/vehicles/pitch--garage-tuning-and-marketplace.md)
+and the [browser game](../pitches/browser-game/pitch--browser-game.md).
 It uses Rust 2024 and Bevy 0.20.1, pinned by [Cargo.toml](../../Cargo.toml)
 and [Cargo.lock](../../Cargo.lock). Traffic and pickup randomness uses `fastrand` 2.5.0.
 Native profile storage uses `rusqlite` 0.41 with bundled SQLite and `dirs` 7.0
-([ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md)).
+([ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md)); the
+browser build keeps one JSON save in `localStorage` through `web-sys`
+([ADR 0011](decisions/0011-keep-the-browser-save-as-one-document-in-local-storage.md)).
 See [CONTRIBUTING.md](../../CONTRIBUTING.md) for checks and
 [ADRs](decisions/README.md) for design history.
 
 ## Simulation and presentation
 
 [src/main.rs](../../src/main.rs) composes the simulation, profile, input, visuals,
-camera, and HUD plugins, and gives the profile plugin the SQLite store. Simulation runs headless under `MinimalPlugins`, following
+camera, and HUD plugins. It gives the profile plugin the SQLite or network store
+natively and the `localStorage` store in the browser, and chooses the window: 960 × 800
+natively, the page's `#car-drive` canvas in the browser. Simulation runs headless under `MinimalPlugins`, following
 [ADR 0002](decisions/0002-keep-the-simulation-headless-behind-a-controls-resource.md).
 Only input reads devices; only presentation writes `Transform`.
 
@@ -29,7 +34,7 @@ Only input reads devices; only presentation writes `Transform`.
 | [player.rs](../../src/player.rs) | `Controls`, car-centred `Position`/`PreviousPosition`, movement tuning, lateral steering |
 | [run.rs](../../src/run.rs) | Distance, coins, energy, protection, held shield, swept collision, game over, restart and the `RunEnded` message |
 | [profile.rs](../../src/profile.rs) | `ProfilePhase` state, loading or creating the profile, queued coin credits, background storage jobs and the exit flush |
-| [storage.rs](../../src/storage.rs) | `ProfileStore` contract and its data types; [sqlite.rs](../../src/storage/sqlite.rs) for native builds, [memory.rs](../../src/storage/memory.rs) for tests |
+| [storage.rs](../../src/storage.rs) | `ProfileStore` contract and its data types; [sqlite.rs](../../src/storage/sqlite.rs) for native builds; [document.rs](../../src/storage/document.rs) with [browser.rs](../../src/storage/browser.rs) for the browser and [memory.rs](../../src/storage/memory.rs) for tests; [contract.rs](../../src/storage/contract.rs) shared garage scenarios |
 | [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate`; name typing while creating a player |
 | [visuals.rs](../../src/visuals.rs) | Procedural car, truck and pickup sprites, turn signals, lane marks, interpolation, boost exhaust, shield bubble and protection outline |
 | [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
@@ -37,7 +42,7 @@ Only input reads devices; only presentation writes `Transform`.
 | [vehicles.rs](../../src/vehicles.rs) | Stable catalogue/configuration types, prices, upgrades and vehicle-specific simulation tuning |
 | [garage.rs](../../src/garage.rs), [garage_ui.rs](../../src/garage_ui.rs) | Garage gating, confirmed asynchronous transactions, keyboard/controller/pointer menus and purchase previews |
 | [vehicle_art.rs](../../src/vehicle_art.rs) | Shared procedural model, paint, tire and body-kit shapes for garage and road |
-| [market.rs](../../src/market.rs), [drive_proof.rs](../../src/drive_proof.rs) | Private authenticated service/client, bounded input recording and headless authoritative replay |
+| [market.rs](../../src/market.rs), [drive_proof.rs](../../src/drive_proof.rs) | Private authenticated service/client, bounded input recording and headless authoritative replay (service, client and replay native only) |
 | [tests.rs](../../src/tests.rs) | Deterministic tests of the actual simulation |
 
 ## Fixed-step flow
@@ -264,6 +269,18 @@ run id and updates the balance in one transaction; a repeated run id changes
 nothing. Stored data is validated again on load. See
 [ADR 0007](decisions/0007-persist-profiles-behind-a-store-interface.md).
 
+In the browser, `BrowserStore` keeps the whole save as one `SaveDocument` in the
+`localStorage` item `car-drive/save` (format `car-drive-save`, version 1). Each
+operation reads and decodes the item, applies the change to a copy and writes it
+back with one `setItem` only if something changed, before the operation's future
+is returned. The document holds profiles, vehicles with their owner or none for
+a listing, garages, and the latest 256 credited runs and garage receipts. Its
+garage operations mirror the SQLite transaction. An invalid item moves to
+`car-drive/save.broken`; a newer one is refused and left untouched. `MemoryStore`
+keeps the same encoded document for tests. Closing the tab sends no `AppExit`, so
+only a drive in progress is lost. See
+[ADR 0011](decisions/0011-keep-the-browser-save-as-one-document-in-local-storage.md).
+
 ## Garage and private shared marketplace
 
 After the profile loads, the garage opens before the first drive. A schema-2
@@ -307,6 +324,23 @@ separation, once-only grants, pricing, retries, concurrent buyers and authentica
 TCP ownership transfers. A physical-controller and two-machine SSH test remain
 outside automated coverage.
 
+## Browser build and publishing
+
+The same crate builds for `wasm32-unknown-unknown` with Bevy's `web` feature and
+WebGL2. [web/index.html](../../web/index.html) shows the 6:5 field, "Loading …"
+and a hint without WebGL2, then focuses the canvas. Bevy suppresses the browser's
+default key handling on the canvas. Escape does not quit in the browser
+(`input::CAN_QUIT`), and the HUD leaves it out of the controls. `fastrand` seeds
+from the browser's crypto through its `js` feature. The private market, its
+client, SQLite and drive verification compile natively only, so the browser
+plays with the local market.
+
+`mise run web:build` builds the size-optimized `web` profile, runs `wasm-bindgen`
+(pinned to the `Cargo.lock` version) and `wasm-opt`, and writes `dist/web`.
+`mise run web:serve` serves it locally. CI runs `mise run check` and Clippy for
+`wasm32` on pull requests; the Pages workflow publishes `dist/web` on every push to
+`main`.
+
 ## Validation and conventions
 
 `mise run check` runs formatting, Clippy, build, and tests in the project Nix shell
@@ -328,7 +362,10 @@ credits across game over, restart and exit, retrying failed credits, and playing
 when storage is unreadable. SQLite tests cover reloading, idempotent and atomic
 credits, initialising empty files, refusing foreign, newer and non-database files
 unchanged, rejecting edited invalid names, and one end-to-end run through the
-plugin and the I/O pool. Graphical play checks are still required for
+plugin and the I/O pool. The contract tests run the same garage and credit
+scenarios against SQLite and the save document; document tests cover reopening,
+edited, foreign, newer and oversized saves, no write after a failure, and bounded
+receipts. The browser's `localStorage` glue is checked manually. Graphical play checks are still required for
 readability, input mapping and feel; see the contribution guide.
 
 Keep game behavior in focused ECS systems. New dependencies, persisted formats or

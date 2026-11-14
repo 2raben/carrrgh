@@ -1,13 +1,19 @@
 //! The profile storage contract: plain data and asynchronous operations.
 //!
 //! Game systems only see [`ProfileStore`]. SQLite stays behind it in
-//! [`sqlite`], so another backend (for example browser storage) can replace it.
+//! `sqlite` natively; the browser keeps a save `document` in `localStorage`.
 use std::fmt;
 
 use crate::vehicles::{GarageRequest, GarageSnapshot};
 use bevy::tasks::BoxedFuture;
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_arch = "wasm32")]
+pub mod browser;
+#[cfg(test)]
+mod contract;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub mod document;
 #[cfg(test)]
 pub mod memory;
 #[cfg(not(target_arch = "wasm32"))]

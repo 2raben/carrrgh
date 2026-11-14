@@ -8,6 +8,9 @@ The [pitch and drawing](docs/pitches/car-drive/pitch--car-movements.md) describe
 first playable experiment; [architecture](docs/architecture/README.md) describes
 its implementation. Cars and road are drawn procedurally, with no external assets.
 
+Play it in a desktop browser at <https://2raben.github.io/carrrgh/>, or build it
+natively as described below.
+
 ## How to play
 
 The car drives forward automatically. Same-direction cars are slower; oncoming
@@ -33,6 +36,11 @@ collection and active car. Selling a spare vehicle pays coins immediately; the
 marketplace then owns it and offers it with its upgrades. Keep at least one car
 and select another before selling the active one.
 
+In the browser, the save lives in the page's local storage under the item
+`car-drive/save`, separate from any native save. Clearing the site data deletes
+it, and a damaged save is moved to `car-drive/save.broken`. The browser's market
+is the local one; there is no shared market there.
+
 The default market is local. For trading between separate clients, follow the
 [private marketplace guide](docs/marketplace.md). It uses a separate authoritative
 database, provisioned accounts and verified drives; local saves cannot be imported.
@@ -47,7 +55,9 @@ database, provisioned accounts and verified drives; local saves cannot be import
 | Garage section / cancel confirmation | Tab / Escape | Right shoulder / East |
 | Quit | Escape | – |
 
-Escape cancels in the garage; use the window close button to quit there.
+Escape cancels in the garage; use the window close button to quit there. In the
+browser, click the playing field to give it the keyboard; Escape does not quit
+there, so close the tab instead.
 In shared-market mode R/Select submits the current drive; start the next one
 from the garage. Online runs end after 20 minutes.
 
@@ -73,7 +83,9 @@ patterns are initial play-test values.
 ## Requirements
 
 - [mise](https://mise.jdx.dev), recommended: `mise install` provides Rust 1.97.1
-  with rustfmt and Clippy, as pinned in [.mise/config.toml](.mise/config.toml).
+  with rustfmt, Clippy and the `wasm32-unknown-unknown` target, plus
+  `wasm-bindgen`, `wasm-opt` and `miniserve` for the browser build, as pinned in
+  [.mise/config.toml](.mise/config.toml).
   Without mise, install Rust 1.97.1 or newer (edition 2024) with rustup.
 - Bevy 0.20.1, downloaded automatically by Cargo. `Cargo.lock` pins dependencies.
 - Clang and LLD on x86_64 Linux, used by [.cargo/config.toml](.cargo/config.toml)
@@ -134,8 +146,15 @@ mise run run     # build and start the game
 mise run test    # headless tests
 mise run build   # debug build; `mise run build --release` for release
 mise run check   # format, Clippy, build, and tests before a PR
+mise run web:build  # browser version into dist/web
+mise run web:serve  # build it and serve it on http://127.0.0.1:8080
 mise tasks       # list every task
 ```
+
+The browser version is the same crate built for `wasm32-unknown-unknown` with
+WebGL2 and a size-optimized `web` profile; [web/index.html](web/index.html) is
+the page around it. Pull requests are checked by CI, and every push to `main`
+publishes the page to GitHub Pages (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 Each task passes extra arguments to Cargo, for example `mise run test boost`. The
 tasks are plain scripts in [.mise/tasks/](.mise/tasks/), so the equivalent Cargo
