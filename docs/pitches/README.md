@@ -50,3 +50,4 @@ What this pitch explicitly does not include.
 | [Coins and player profile](coins/pitch--coins-and-player-profile.md) | implemented |
 | [Garage, vehicle tuning and marketplace](vehicles/pitch--garage-tuning-and-marketplace.md) | implemented as a local garage and private shared test market |
 | [Endless difficulty and mixed traffic](traffic/pitch--endless-difficulty-and-mixed-traffic.md) | implemented |
+| [Browser game](browser-game/pitch--browser-game.md) | implemented; publishing needs a public repository |
