@@ -6,6 +6,7 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::{ButtonState, InputSystems};
 use bevy::prelude::*;
 
+use crate::bindings::{Action, BindingIntent, Bindings};
 use crate::garage::{Garage, Intent, Tab};
 use crate::garage_ui::MenuActions;
 use crate::player::Controls;
@@ -26,11 +27,13 @@ impl Plugin for InputPlugin {
         app.add_systems(
             PreUpdate,
             (
+                capture_binding,
                 menu_controls.run_if(in_state(ProfilePhase::Playing)),
                 sample_controls.run_if(not(creating.clone())),
                 edit_name.run_if(creating),
                 quit.run_if(|| CAN_QUIT),
             )
+                .chain()
                 .after(InputSystems),
         );
     }
@@ -43,21 +46,17 @@ fn sample_controls(
     run: Res<Run>,
     garage: Res<Garage>,
     storage: Res<crate::profile::Storage>,
+    bindings: Res<Bindings>,
     mut controls: ResMut<Controls>,
 ) {
     if garage.open {
         return;
     }
-    let any_key = |codes: &[KeyCode]| keys.any_pressed(codes.iter().copied());
-    let any_key_just = |codes: &[KeyCode]| keys.any_just_pressed(codes.iter().copied());
-    const LEFT: &[KeyCode] = &[KeyCode::KeyA, KeyCode::ArrowLeft];
-    const RIGHT: &[KeyCode] = &[KeyCode::KeyD, KeyCode::ArrowRight];
-    const BOOST: &[KeyCode] = &[KeyCode::Space];
-    const RESTART: &[KeyCode] = &[KeyCode::KeyR, KeyCode::Backspace];
-
-    let mut move_x = f32::from(u8::from(any_key(RIGHT))) - f32::from(u8::from(any_key(LEFT)));
-    let mut boost = any_key(BOOST);
-    let mut restart = any_key_just(RESTART);
+    let held = |action| bindings.map.pressed(action, &keys, false);
+    let mut move_x =
+        f32::from(u8::from(held(Action::Right))) - f32::from(u8::from(held(Action::Left)));
+    let mut boost = held(Action::Boost);
+    let mut restart = bindings.map.pressed(Action::Restart, &keys, true);
     for pad in &gamepads {
         let stick = pad.left_stick().x;
         if stick.abs() > STICK_DEAD_ZONE {
@@ -76,6 +75,7 @@ fn sample_controls(
         0.0
     };
     controls.boost = playing && boost;
+    controls.brake = playing && held(Action::Brake);
     // Latch presses until a fixed step consumes them.
     if storage.0.online() {
         controls.end_drive |= restart;
@@ -133,7 +133,11 @@ fn menu_controls(
     mut garage: ResMut<Garage>,
     menu: Res<MenuActions>,
     mut controls: ResMut<Controls>,
+    bindings: Res<Bindings>,
 ) {
+    if bindings.capture.is_some() || bindings.waiting_release || bindings.loading {
+        return;
+    }
     let pad = |button| pads.iter().any(|p| p.just_pressed(button));
     if !garage.open {
         if keys.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Start) {
@@ -157,6 +161,12 @@ fn menu_controls(
             garage.enqueue(intent.clone());
         }
     }
+    if bindings.open {
+        if keys.just_pressed(KeyCode::Escape) || pad(GamepadButton::East) {
+            garage.enqueue(Intent::Bindings(BindingIntent::Close));
+        }
+        return;
+    }
     if keys.just_pressed(KeyCode::Tab) || pad(GamepadButton::RightTrigger) {
         let tab = match garage.tab {
             Tab::Owned => Tab::Catalog,
@@ -170,5 +180,139 @@ fn menu_controls(
     }
     if keys.just_pressed(KeyCode::KeyG) || pad(GamepadButton::Start) {
         garage.enqueue(Intent::Start);
+    }
+}
+
+/// Runs before all other keyboard consumers. Capture never leaks to menu actions.
+fn capture_binding(keys: Res<ButtonInput<KeyCode>>, mut bindings: ResMut<Bindings>) {
+    if bindings.waiting_release {
+        if keys.get_pressed().next().is_none() {
+            bindings.waiting_release = false;
+        }
+        return;
+    }
+    if bindings.capture.is_none() {
+        return;
+    }
+    if !bindings.capture_ready {
+        if keys.get_pressed().next().is_none() {
+            bindings.capture_ready = true;
+        }
+        return;
+    }
+    if keys.just_pressed(KeyCode::Escape) {
+        bindings.apply(BindingIntent::Cancel);
+    } else if let Some(key) = keys.get_just_pressed().next() {
+        bindings.capture_key(*key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Controls>()
+            .init_resource::<Run>()
+            .init_resource::<Bindings>()
+            .init_resource::<MenuActions>()
+            .init_resource::<Garage>()
+            .insert_resource(crate::profile::Storage(std::sync::Arc::new(
+                crate::storage::memory::MemoryStore::default(),
+            )))
+            .add_systems(
+                Update,
+                (capture_binding, menu_controls, sample_controls).chain(),
+            );
+        app.world_mut().resource_mut::<Garage>().open = false;
+        app
+    }
+    #[test]
+    fn every_default_boost_and_brake_key_samples_and_releases() {
+        let mut app = app();
+        for (key, boost, brake) in [
+            (KeyCode::Space, true, false),
+            (KeyCode::ArrowUp, true, false),
+            (KeyCode::KeyW, true, false),
+            (KeyCode::ArrowDown, false, true),
+            (KeyCode::KeyS, false, true),
+        ] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            let controls = app.world().resource::<Controls>();
+            assert_eq!((controls.boost, controls.brake), (boost, brake));
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+            app.update();
+            let controls = app.world().resource::<Controls>();
+            assert!(!controls.boost && !controls.brake);
+        }
+    }
+    #[test]
+    fn capture_waits_for_release_and_does_not_activate_menu_or_drive() {
+        let mut app = app();
+        app.world_mut().resource_mut::<Garage>().open = true;
+        app.world_mut()
+            .resource_mut::<MenuActions>()
+            .0
+            .push(Intent::Start);
+        app.world_mut()
+            .resource_mut::<Bindings>()
+            .apply(BindingIntent::Capture(Some(0)));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        assert!(app.world().resource::<Bindings>().capture.is_some());
+        assert!(app.world().resource::<Garage>().intents.is_empty());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        assert!(app.world().resource::<Bindings>().capture.is_none());
+        assert_eq!(
+            app.world().resource::<Bindings>().map.keys(Action::Boost)[0],
+            "Enter"
+        );
+        assert!(app.world().resource::<Garage>().intents.is_empty());
+        assert!(!app.world().resource::<Controls>().boost);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        app.world_mut().resource_mut::<Garage>().open = false;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        assert!(app.world().resource::<Controls>().boost);
+    }
+    #[test]
+    fn capture_cancel_preserves_keys_and_does_not_start_or_close_the_garage() {
+        let mut app = app();
+        app.world_mut().resource_mut::<Garage>().open = true;
+        app.world_mut()
+            .resource_mut::<Bindings>()
+            .apply(BindingIntent::Capture(Some(0)));
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        assert!(app.world().resource::<Bindings>().capture.is_none());
+        assert_eq!(
+            app.world().resource::<Bindings>().map.keys(Action::Boost)[0],
+            "Space"
+        );
+        assert!(app.world().resource::<Garage>().intents.is_empty());
     }
 }

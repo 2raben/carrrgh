@@ -15,7 +15,7 @@ pub struct DriveTicket {
     pub vehicle: Vehicle,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Frame(pub i8, pub bool);
+pub struct Frame(pub i8, pub bool, pub bool);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DriveProof {
     pub ticket: String,
@@ -61,7 +61,9 @@ pub fn record_controls(mut controls: ResMut<Controls>, mut recording: ResMut<Rec
     }
     let steer = (controls.move_x.clamp(-1., 1.) * 127.).round() as i8;
     controls.move_x = f32::from(steer) / 127.;
-    recording.frames.push(Frame(steer, controls.boost));
+    recording
+        .frames
+        .push(Frame(steer, controls.boost, controls.brake));
 }
 pub fn limit_online_drive(recording: Res<Recording>, mut run: ResMut<Run>) {
     if recording.ticket.is_some() && recording.frames.len() >= MAX_DRIVE_TICKS {
@@ -100,6 +102,7 @@ pub fn verify(ticket: &DriveTicket, proof: &DriveProof) -> Result<u64, String> {
         *app.world_mut().resource_mut::<Controls>() = Controls {
             move_x: f32::from(frame.0) / 127.,
             boost: frame.1,
+            brake: frame.2,
             restart: false,
             end_drive: false,
         };
@@ -149,6 +152,7 @@ mod tests {
                 let mut controls = app.world_mut().resource_mut::<Controls>();
                 controls.move_x = if tick % 240 < 120 { -0.673 } else { 0.371 };
                 controls.boost = tick % 320 < 160;
+                controls.brake = tick % 200 < 70;
                 app.update();
             }
             let proof = app.world().resource::<Recording>().proof().unwrap();
@@ -162,7 +166,7 @@ mod tests {
             );
             if run.finished {
                 let mut too_long = proof.clone();
-                too_long.frames.push(Frame(0, false));
+                too_long.frames.push(Frame(0, false, false));
                 assert!(verify(&ticket, &too_long).is_err());
             }
         }

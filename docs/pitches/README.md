@@ -51,3 +51,4 @@ What this pitch explicitly does not include.
 | [Garage, vehicle tuning and marketplace](vehicles/pitch--garage-tuning-and-marketplace.md) | implemented as a local garage and private shared test market |
 | [Endless difficulty and mixed traffic](traffic/pitch--endless-difficulty-and-mixed-traffic.md) | implemented |
 | [Browser game](browser-game/pitch--browser-game.md) | implemented; Pages must use GitHub Actions as its source |
+| [Key bindings](key-bindings/pitch--key-bindings.md) | implemented |

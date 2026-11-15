@@ -5,12 +5,10 @@ use crate::run::Run;
 use crate::visuals::palette;
 use bevy::prelude::*;
 
-/// Escape quits only natively (see `input::CAN_QUIT`); the browser tab is closed instead.
-const CONTROLS_HELP: &str = if crate::input::CAN_QUIT {
-    "A / D or Left / Right   Steer\nSPACE   Boost     R   Restart     ESC   Quit\nController: Stick / D-pad / South / Select"
-} else {
-    "A / D or Left / Right   Steer\nSPACE   Boost     R   Restart\nController: Stick / D-pad / South / Select"
-};
+use crate::bindings::{Action, Bindings};
+
+#[derive(Component)]
+struct ControlsHelp;
 
 #[derive(Component)]
 struct Progress;
@@ -32,8 +30,16 @@ struct Setup;
 pub struct HudPlugin;
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_hud)
-            .add_systems(Update, (show_run, show_wallet, show_finish, show_setup));
+        app.add_systems(Startup, spawn_hud).add_systems(
+            Update,
+            (
+                show_run,
+                show_wallet,
+                show_finish,
+                show_setup,
+                show_controls,
+            ),
+        );
     }
 }
 
@@ -157,7 +163,7 @@ fn spawn_hud(mut commands: Commands) {
             ),
             (Progress, text("", 20.0)),
             text("Watch the turn signals.\nTrucks from 4000 m.", 14.0),
-            text("BOOST / SPACE", 15.0),
+            text("BOOST", 15.0),
             (
                 Node {
                     width: Val::Percent(100.0),
@@ -188,7 +194,8 @@ fn spawn_hud(mut commands: Commands) {
             left: Val::Px(20.0),
             ..default()
         }),
-        text(CONTROLS_HELP, 14.0),
+        ControlsHelp,
+        text("", 14.0),
     ));
     commands.spawn((
         FinishCue,
@@ -270,6 +277,7 @@ fn show_wallet(
 fn show_finish(
     run: Res<Run>,
     account: Res<Account>,
+    bindings: Res<Bindings>,
     mut finish: Query<(&mut Text, &mut Visibility), With<FinishCue>>,
 ) {
     for (mut text, mut visibility) in &mut finish {
@@ -284,9 +292,10 @@ fn show_finish(
             (None, None) => String::new(),
         };
         text.0 = format!(
-            "END OF THE ROAD\n{:.0} metres   +{} coins\n{balance}\nR / Select to drive again   G / Start for garage",
+            "END OF THE ROAD\n{:.0} metres   +{} coins\n{balance}\n{} / Select to drive again   G / Start for garage",
             run.metres(),
-            run.coins()
+            run.coins(),
+            bindings.map.labels(Action::Restart)
         );
         *visibility = Visibility::Inherited;
     }
@@ -318,5 +327,32 @@ fn show_setup(
         };
         text.0 = content;
         *visibility = Visibility::Inherited;
+    }
+}
+
+fn show_controls(
+    bindings: Res<Bindings>,
+    account: Res<Account>,
+    mut help: Query<&mut Text, With<ControlsHelp>>,
+) {
+    for mut text in &mut help {
+        text.0 = format!(
+            "{}: left   {}: right\n{}: boost   {}: brake\n{}: {}   G: garage{}\nController: Stick / D-pad / South / Select",
+            bindings.map.labels(Action::Left),
+            bindings.map.labels(Action::Right),
+            bindings.map.labels(Action::Boost),
+            bindings.map.labels(Action::Brake),
+            bindings.map.labels(Action::Restart),
+            if account.online {
+                "end drive"
+            } else {
+                "restart"
+            },
+            if crate::input::CAN_QUIT {
+                "   Esc: quit"
+            } else {
+                ""
+            }
+        );
     }
 }

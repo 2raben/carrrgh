@@ -47,6 +47,7 @@ write a new record that supersedes the old one instead of deleting it.
 | [0006 — Reserve lanes for signalled traffic manoeuvres](0006-reserve-lanes-for-signalled-traffic-manoeuvres.md) | accepted; amends 0005; amended by 0010 |
 | [0007 — Persist profiles in SQLite behind an asynchronous store interface](0007-persist-profiles-behind-a-store-interface.md) | accepted; amended by 0008, 0009, 0011 |
 | [0008 — Transact vehicle ownership, upgrades and coins together](0008-transact-vehicle-ownership-and-tuning.md) | accepted; amends 0007 |
-| [0009 — Verify drives in a private authoritative market service](0009-verify-drives-in-a-private-market-service.md) | accepted; amends 0007 |
+| [0009 — Verify drives in a private authoritative market service](0009-verify-drives-in-a-private-market-service.md) | accepted; amends 0007; amended by 0012 |
 | [0010 — Mix lane directions with reserved evasions](0010-mix-lane-directions-with-reserved-evasions.md) | accepted; amends 0006 |
 | [0011 — Keep the browser save as one document in `localStorage`](0011-keep-the-browser-save-as-one-document-in-local-storage.md) | accepted; amends 0007 |
+| [0012 — Persist local key bindings and replay braking](0012-persist-local-key-bindings-and-replay-braking.md) | accepted; amends 0009 |

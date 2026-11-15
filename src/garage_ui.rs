@@ -1,4 +1,5 @@
 //! Keyboard, controller and pointer share the same garage intents.
+use crate::bindings::{ACTIONS, BindingIntent, Bindings};
 use crate::garage::{Garage, Intent, Tab};
 use crate::profile::{Account, ProfilePhase};
 use crate::vehicles::*;
@@ -16,8 +17,12 @@ pub struct MenuActions(pub Vec<Intent>);
 pub struct GarageUiPlugin;
 impl Plugin for GarageUiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MenuActions>()
-            .add_systems(Update, (draw, highlight).chain());
+        app.init_resource::<MenuActions>().add_systems(
+            Update,
+            (draw, highlight)
+                .chain()
+                .after(crate::garage::update_garage),
+        );
     }
 }
 fn text(label: impl Into<String>, size: f32) -> impl Bundle {
@@ -65,14 +70,20 @@ fn column(width: f32) -> impl Bundle {
 fn draw(
     mut commands: Commands,
     mut garage: ResMut<Garage>,
-    account: Res<Account>,
-    phase: Res<State<ProfilePhase>>,
+    profile: (Res<Account>, Res<State<ProfilePhase>>),
     roots: Query<Entity, With<GarageRoot>>,
     mut actions: ResMut<MenuActions>,
-    mut last: Local<Option<(u64, bool, bool)>>,
+    mut last: Local<Option<(u64, u64, bool, bool)>>,
+    bindings: Res<Bindings>,
 ) {
+    let (account, phase) = profile;
     let visible = garage.open && *phase.get() == ProfilePhase::Playing;
-    let key = (garage.revision, visible, account.saving());
+    let key = (
+        garage.revision,
+        bindings.revision,
+        visible,
+        account.saving(),
+    );
     if *last == Some(key) {
         return;
     }
@@ -82,6 +93,10 @@ fn draw(
     }
     actions.0.clear();
     if !visible {
+        return;
+    }
+    if bindings.open {
+        draw_bindings(&mut commands, &mut actions, &bindings);
         return;
     }
     let selected = garage.selected_car();
@@ -102,6 +117,7 @@ fn draw(
                 button(p, &mut actions, "Drive / Start".into(), Intent::Start);
             });
         });
+        button(root, &mut actions, "Key bindings".into(), Intent::Bindings(BindingIntent::Open));
         root.spawn(Node { flex_grow: 1., min_height: Val::Px(0.), column_gap: Val::Px(10.), ..default() }).with_children(|panels| {
             panels.spawn(column(29.)).with_children(|list| {
                 list.spawn(text(match garage.tab { Tab::Owned => "YOUR COLLECTION", Tab::Catalog => "CHOOSE YOUR NEXT CAR", Tab::Market => "GUARANTEED BUYBACK" }, 15.));
@@ -210,4 +226,96 @@ fn highlight(
             Color::srgb(0.13, 0.18, 0.23)
         };
     }
+}
+
+fn draw_bindings(commands: &mut Commands, actions: &mut MenuActions, bindings: &Bindings) {
+    commands
+        .spawn((
+            GarageRoot,
+            GlobalZIndex(21),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.),
+                height: Val::Percent(100.),
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(24.)),
+                row_gap: Val::Px(10.),
+                ..default()
+            },
+            BackgroundColor(Color::srgb(0.025, 0.04, 0.065)),
+        ))
+        .with_children(|root| {
+            root.spawn(text("KEY BINDINGS", 27.));
+            root.spawn(text(
+                "Physical key positions (letters use US labels). G and Esc are reserved.
+Up / Down: focus   Enter: choose   Esc: back",
+                14.,
+            ));
+            let mut add = |parent: &mut ChildSpawnerCommands, label: String, intent| {
+                button(parent, actions, label, Intent::Bindings(intent));
+            };
+            if bindings.capture.is_some() {
+                root.spawn(text(
+                    format!("{}: press a new key", bindings.selected.name()),
+                    23.,
+                ));
+                root.spawn(text(&bindings.notice, 16.));
+                add(root, "Cancel capture".into(), BindingIntent::Cancel);
+                return;
+            }
+            root.spawn(Node {
+                column_gap: Val::Px(20.),
+                ..default()
+            })
+            .with_children(|panels| {
+                panels.spawn(column(50.)).with_children(|list| {
+                    for action in ACTIONS {
+                        add(
+                            list,
+                            format!(
+                                "{}{}: {}",
+                                if bindings.selected == action {
+                                    "> "
+                                } else {
+                                    ""
+                                },
+                                action.name(),
+                                bindings.map.labels(action)
+                            ),
+                            BindingIntent::Select(action),
+                        );
+                    }
+                });
+                panels.spawn(column(50.)).with_children(|detail| {
+                    detail.spawn(text(bindings.selected.name(), 20.));
+                    for (i, key) in bindings.map.keys(bindings.selected).iter().enumerate() {
+                        add(
+                            detail,
+                            format!("Replace {}", crate::bindings::label(key)),
+                            BindingIntent::Capture(Some(i)),
+                        );
+                        if bindings.map.keys(bindings.selected).len() > 1 {
+                            add(
+                                detail,
+                                format!("Remove {}", crate::bindings::label(key)),
+                                BindingIntent::Remove(i),
+                            );
+                        }
+                    }
+                    if bindings.map.keys(bindings.selected).len() < 4 {
+                        add(
+                            detail,
+                            "Add alternative key".into(),
+                            BindingIntent::Capture(None),
+                        );
+                    }
+                });
+            });
+            root.spawn(text(&bindings.notice, 15.));
+            if bindings.save_error {
+                add(root, "Retry saving".into(), BindingIntent::Retry);
+            }
+            add(root, "Restore defaults".into(), BindingIntent::Reset);
+            add(root, "Back to garage".into(), BindingIntent::Close);
+        });
 }

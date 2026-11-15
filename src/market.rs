@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 2;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_ADDRESS: &str = "127.0.0.1:47831";
 
@@ -372,7 +372,7 @@ mod tests {
         );
         let forged = DriveProof {
             ticket: ticket.id.clone(),
-            frames: vec![crate::drive_proof::Frame(0, false); 6400],
+            frames: vec![crate::drive_proof::Frame(0, false, false); 6400],
         };
         assert!(service.handle(envelope(Command::Finish(forged))).is_err());
         // Tests own the recorded start time; no sleep or trust in a client clock.
@@ -386,7 +386,7 @@ mod tests {
         .unwrap();
         let proof = DriveProof {
             ticket: ticket.id,
-            frames: vec![crate::drive_proof::Frame(0, false); 128],
+            frames: vec![crate::drive_proof::Frame(0, false, false); 128],
         };
         let Reply::Profile(after) = service
             .handle(envelope(Command::Finish(proof.clone())))

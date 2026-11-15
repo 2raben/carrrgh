@@ -116,7 +116,13 @@ Check the affected behavior manually in Car Drive:
   check visibly wider, longer trucks, their cargo beds and matching collision boxes.
   Truck lane changes should be slower. Game over freezes signals; restart returns
   to level 1 with no trucks or old lane-change state.
-- Space boosts, the gauge drains, and release restores cruising and recharges.
+- Space, Up and W boost; Down and S brake to 75% of cruise. Brake wins over
+  boost and recharges energy; releasing brake restores cruise immediately.
+- In the garage's Key bindings screen, replace Space with B, add an alternative,
+  reject a conflict, cancel capture with Escape, remove an alternative, and restore
+  defaults. Captured keys must not activate menu actions. Close and reopen the
+  game (and reload the browser): settings persist, and hints use the chosen keys.
+- While boosting, the gauge drains, and release restores cruising and recharges.
   Depletion ends boost; release is required to boost again.
 - Hits cost one heart and show a steady protection outline. One overlapping car
   cannot drain all lives. Boost gives no collision immunity.

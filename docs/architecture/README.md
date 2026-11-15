@@ -35,6 +35,7 @@ Only input reads devices; only presentation writes `Transform`.
 | [run.rs](../../src/run.rs) | Distance, coins, energy, protection, held shield, swept collision, game over, restart and the `RunEnded` message |
 | [profile.rs](../../src/profile.rs) | `ProfilePhase` state, loading or creating the profile, queued coin credits, background storage jobs and the exit flush |
 | [storage.rs](../../src/storage.rs) | `ProfileStore` contract and its data types; [sqlite.rs](../../src/storage/sqlite.rs) for native builds; [document.rs](../../src/storage/document.rs) with [browser.rs](../../src/storage/browser.rs) for the browser and [memory.rs](../../src/storage/memory.rs) for tests; [contract.rs](../../src/storage/contract.rs) shared garage scenarios |
+| [bindings.rs](../../src/bindings.rs), [bindings/persistence.rs](../../src/bindings/persistence.rs) | Versioned local keyboard preferences, binding validation, capture state and atomic settings persistence |
 | [input.rs](../../src/input.rs) | Keyboard and controller intent sampled after `InputSystems` in `PreUpdate`; name typing while creating a player |
 | [visuals.rs](../../src/visuals.rs) | Procedural car, truck and pickup sprites, turn signals, lane marks, interpolation, boost exhaust, shield bubble and protection outline |
 | [camera.rs](../../src/camera.rs) | Fixed 960 × 800 road view |
@@ -70,11 +71,31 @@ ticket seeds prepare the traffic/pickup generators, then each driving tick recor
 quantized input before advancing the simulation. Without these plugins, as in
 most headless tests, the drive starts immediately.
 
-Held steering and boost apply each tick; restart is consumed once. Game over gates
+Held steering, boost and brake apply each tick; restart is consumed once. Game over gates
 simulation itself, not just input. In `PostUpdate`, positions and road distance
 interpolate between the last two ticks before transform propagation. At game over,
 rendering uses the final positions directly, avoiding interpolation cycling while
 simulation is stopped.
+
+## Keyboard preferences
+
+The garage's Key bindings screen edits steering, boost, brake and restart/end-drive
+keys. Defaults are A/Left, D/Right, Space/Up/W, Down/S and R/Backspace respectively.
+Each action has 1–4 physical keys; labels use US letter positions. G and Escape
+remain reserved for garage/quit, and modifiers/chords are unsupported. Conflicting
+assignments are rejected without changing the previous binding. Menu navigation
+and name entry retain their separate input contexts.
+
+Capture waits for all keys to be released before accepting a new press. Escape
+cancels, and the captured/cancelled key must be released before menu input resumes.
+The HUD resolves its hints from the active map. Native preferences load and save
+on the I/O pool in `key-bindings.json` beside the profile database, using a synced
+temporary file and atomic rename. Browser preferences use their own localStorage
+item, `car-drive/key-bindings`. The version-1 JSON document uses named actions and
+explicit key names. Invalid/newer settings are left untouched and defaults remain
+usable; an error offers retry or restoring defaults. Editing or explicitly retrying
+saves replaces the stored settings. Preferences never travel to the market.
+See [ADR 0012](decisions/0012-persist-local-key-bindings-and-replay-braking.md).
 
 ## Road and movement
 
@@ -88,7 +109,13 @@ sideways at up to 420 units/s, stops on release, and is clamped inside the road.
 The camera keeps the same world extent on resize, preserving reaction distance;
 unusual aspect ratios stretch the view.
 
-Cruising initially advances at 300 units/s; boost reaches 540. Road marks scroll by
+Cruising initially advances at 300 units/s; boost reaches 540. Brake sets speed to
+75% of the vehicle's cruise speed (225 for the Corsa), scaled by difficulty;
+release restores cruise immediately. Brake wins over boost, so energy recharges
+while braking. Exhaustion still requires releasing boost before reuse. Even the
+slowest model's braking speed stays above same-direction traffic's 140 units/s.
+Traffic admission, lane changes and pickup clearance use initial braking speed as
+the minimum speed when predicting the longest remaining encounter. Road marks scroll by
 travelled distance, while traffic moves at its own signed speed minus player speed. Positive
 traffic speed (140) is same-direction; negative (−150) is oncoming. Front windows,
 headlights and opposite orientation distinguish direction as well as colour.
@@ -130,7 +157,7 @@ Before admission, each candidate is checked against pairs of existing cars in th
 other lanes. Intersecting their relative-motion intervals detects whether all three
 could fit within a 360-unit longitudinal band (426 with trucks) before any of them
 despawns. Lane reservations are included in every possible assignment to three
-lanes. Such candidates are rejected. The lifetime estimate uses initial cruise speed, so boost,
+lanes. Such candidates are rejected. The lifetime estimate uses initial braking speed, so boost,
 boost release and increasing difficulty cannot extend the predicted conflict window.
 This prevents compact three-lane walls and same-lane overlaps; it does not establish
 that every possible steering choice can recover safely. Headless tests use explicit
@@ -162,7 +189,7 @@ falls back to the lane's direction. Mixed pairs sharing a lane are admitted when
 
 - they diverge (same-direction vehicle ahead) and are already 180 units apart;
 - they approach head-on, but the lower same-direction vehicle leaves the road
-  (estimated at initial cruise speed) before they come within 180 units; or
+  (estimated at initial braking speed) before they come within 180 units; or
 - the oncoming vehicle already holds an **evasion** out of the only shared lane
   that releases it, plus 0.05 seconds of fixed-step slack, before the gap closes
   below 180 units. Its target lane must not hold the same-direction vehicle.
@@ -217,7 +244,7 @@ shuffled lane; if no lane is clear, the spawn retries each tick.
 A lane is clear when every car occupying or reserving it keeps at least 240 units
 between centres from the pickup until it passes 78 units below the player's start line. Their gap
 changes only by the car's own speed, so checking both ends of the pickup's lifetime
-at initial cruise speed (its longest) covers the whole span. Traffic spawning applies
+at initial braking speed (its longest) covers the whole span. Traffic spawning applies
 the same check against pickups already on the road. This keeps cars off pickups
 in their lane; reaching the lane through other traffic remains the player's risk.
 Pickups draw from their own seeded generator, separate from traffic's.
@@ -311,11 +338,12 @@ Bevy's shared I/O pool, so a server never waits behind blocking client requests
 in the same process (the TCP test runs both ends together).
 
 Online drives begin with a server-issued seed and vehicle snapshot. At 64 Hz the
-client records quantized steering and boost, then submits those inputs on game
+client records quantized steering, boost and brake, then submits those inputs on game
 over, R/Select, or exit. The server replays the real `SimulationPlugin` to calculate
 coins, checks elapsed server time and credits each ticket exactly once. No client
 score or local balance is accepted. Garage mutations are locked until the ticket
-finishes. A new client login abandons an older unfinished ticket. Online drives
+finishes. A new client login abandons an older unfinished ticket. Protocol version 2
+includes brake in each frame; client and server must be updated together. Online drives
 end after twenty minutes to bound memory and verification time. Local drives
 keep their original restart behavior and have no recording limit. See
 [ADR 0009](decisions/0009-verify-drives-in-a-private-market-service.md) and the
@@ -356,7 +384,7 @@ simultaneous changes from level 11, head-on admission with and without evasions,
 evasion timing and lane release, spawned evasions only from level 6, damage while
 waiting on lane markings, reproducible random layouts, continuous individual
 spawning, and lane-sharing spacing, mixed lanes and three-lane wall checks across
-seeds at levels 1–10, 15, 20, 30 and 50 with boost cycling. Pickup tests cover heart and shield effects and limits, shields with
+seeds at levels 1–10, 15, 20, 30 and 50 with boost/brake cycling. Pickup tests cover heart and shield effects and limits, shields with
 protection and the last heart, collection at extreme speed, restart, the clearance
 prediction, rarity, useful kinds only, one pickup at a time, lane clearance with
 real traffic, and seeded reproducibility. Profile tests cover the coin rate,

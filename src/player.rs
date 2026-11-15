@@ -18,6 +18,7 @@ pub struct PreviousPosition(pub Vec2);
 pub struct Controls {
     pub move_x: f32,
     pub boost: bool,
+    pub brake: bool,
     pub restart: bool,
     pub end_drive: bool,
 }
@@ -32,6 +33,13 @@ pub struct PlayerTuning {
     pub boost_drain: f32,
     pub boost_recharge: f32,
     pub protection_seconds: f32,
+}
+
+impl PlayerTuning {
+    /// Play-test value; every catalogue model still overtakes 140-unit/s traffic.
+    pub fn brake_speed(&self) -> f32 {
+        self.cruise_speed * 0.75
+    }
 }
 
 impl Default for PlayerTuning {

@@ -1,5 +1,6 @@
 //! Car Drive: steer through traffic, manage boost, and drive as far as possible.
 
+mod bindings;
 mod camera;
 mod difficulty;
 mod drive_proof;
@@ -55,6 +56,7 @@ fn main() -> AppExit {
             profile::ProfilePlugin { store },
             garage::GaragePlugin,
             garage_ui::GarageUiPlugin,
+            bindings::BindingsPlugin,
             input::InputPlugin,
             visuals::VisualsPlugin,
             camera::CameraPlugin,

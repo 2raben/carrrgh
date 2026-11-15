@@ -54,7 +54,7 @@ impl Default for PickupFlow {
 
 /// Whether a car in a pickup's lane stays at least `PICKUP_CLEARANCE` away
 /// until the pickup passes the player. Their gap changes only by the car's own
-/// speed; the initial cruise speed gives the pickup its longest lifetime.
+/// speed; the minimum braking speed gives the pickup its longest lifetime.
 #[cfg(test)]
 pub fn keeps_clear(pickup_y: f32, car_y: f32, car_speed: f32, cruise_speed: f32) -> bool {
     keeps_clear_for(
@@ -69,7 +69,7 @@ pub fn keeps_clear(pickup_y: f32, car_y: f32, car_speed: f32, cruise_speed: f32)
 }
 pub fn keeps_clear_for(pickup_y: f32, car_y: f32, car_speed: f32, tuning: &PlayerTuning) -> bool {
     let passed_y = PLAYER_START.y - tuning.size.y.max(CAR_SIZE.y);
-    let lifetime = ((pickup_y - passed_y) / tuning.cruise_speed).max(0.0);
+    let lifetime = ((pickup_y - passed_y) / tuning.brake_speed()).max(0.0);
     let clearance = PICKUP_CLEARANCE + (tuning.size.y - CAR_SIZE.y).max(0.0);
     let start = car_y - pickup_y;
     let end = start + car_speed * lifetime;
