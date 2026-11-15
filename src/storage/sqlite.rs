@@ -70,13 +70,16 @@ impl SqliteStore {
     }
 
     /// Runs blocking work on the I/O pool, or when polled if no pool exists.
+    /// Authoritative market work always runs when polled, on the server's own
+    /// worker thread, so it never waits behind blocking client requests that
+    /// occupy the shared pool (as in tests that run both ends in one process).
     pub(crate) fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> StoreResult<T> + Send + 'static,
     ) -> BoxedFuture<'static, StoreResult<T>> {
         let store = self.clone();
         let job = move || store.with_connection(work);
-        match IoTaskPool::try_get() {
+        match IoTaskPool::try_get().filter(|_| !self.market) {
             Some(pool) => Box::pin(pool.spawn(async move { job() })),
             None => Box::pin(async move { job() }),
         }
