@@ -48,7 +48,8 @@ database, provisioned accounts and verified drives; local saves cannot be import
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Steer left / right | A / D or Left / Right | Left stick or D-pad |
-| Boost (hold) | Space | South (A / Cross) |
+| Boost (hold) | Space, Arrow Up or W | South (A / Cross) |
+| Brake (hold) | Arrow Down or S | – |
 | Restart | R or Backspace | Select |
 | Garage after game over / start from garage | G | Start |
 | Garage menu focus / activate | Up, Down / Enter | D-pad / South |
@@ -61,6 +62,15 @@ there, so close the tab instead.
 In shared-market mode R/Select submits the current drive; start the next one
 from the garage. Online runs end after 20 minutes.
 
+Open **Key bindings** in the garage to change gameplay keys, add or remove
+alternatives, or restore defaults. Each action keeps at least one key; conflicting
+assignments are rejected. Keys refer to physical positions, with US letter labels.
+G and Escape remain reserved. Settings persist on this device, independently of
+the player profile and marketplace, in `key-bindings.json` beside the native save
+or `car-drive/key-bindings` in browser local storage.
+
+Hold brake to move at 75% of cruising speed; release to return to cruise immediately.
+Brake takes priority over boost and recharges energy. Steering remains available.
 Release boost to recharge. If the tank empties, release before boosting again.
 Every 1,000 metres a new level begins, without an end: your speed increases up to
 level ten, and traffic keeps getting denser. Later, lanes carry both directions and

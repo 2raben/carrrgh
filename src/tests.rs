@@ -824,8 +824,9 @@ fn random_traffic_is_continuous_spaced_and_never_forms_a_three_lane_wall() {
             let mut used_lanes = [false; 3];
             let mut directions = [false; 2];
             for tick in 0..3840 {
-                // Include releases and recharges, not just constant cruising.
+                // Include braking, boost precedence, releases and recharges.
                 sim.controls().boost = (tick / 160) % 2 == 0;
+                sim.controls().brake = (tick / 96) % 3 == 0;
                 sim.steps(1);
                 // Driving raises the level during the run.
                 let current = Difficulty::at(sim.run().level());
@@ -1042,10 +1043,13 @@ fn pickup_clearance_predicts_cars_closing_in_before_the_player_arrives() {
     let cruise = 300.0;
     // Oncoming car behind the pickup would catch up with it.
     assert!(!keeps_clear(480.0, 880.0, -150.0, cruise));
-    assert!(keeps_clear(480.0, 1180.0, -150.0, cruise));
+    // A gap safe at cruise is not enough when the player brakes.
+    assert!(!keeps_clear(480.0, 1180.0, -150.0, cruise));
+    assert!(keeps_clear(480.0, 1300.0, -150.0, cruise));
     // The pickup catches a slower same-direction car ahead of it.
     assert!(!keeps_clear(480.0, 180.0, 140.0, cruise));
-    assert!(keeps_clear(480.0, -200.0, 140.0, cruise));
+    assert!(!keeps_clear(480.0, -200.0, 140.0, cruise));
+    assert!(keeps_clear(480.0, -300.0, 140.0, cruise));
     // A same-direction car behind it drives away from the pickup.
     assert!(keeps_clear(480.0, 480.0 + PICKUP_CLEARANCE, 140.0, cruise));
     assert!(!keeps_clear(480.0, 680.0, 140.0, cruise));
@@ -1486,5 +1490,50 @@ fn online_garage_start_does_not_credit_an_empty_or_previous_ticket() {
         sim.until("garage reopened", |s| {
             s.0.world().resource::<Garage>().open && !s.0.world().resource::<Garage>().busy()
         });
+    }
+}
+
+#[test]
+fn braking_slows_distance_and_traffic_while_preserving_steering_and_recharging() {
+    let mut sim = Sim::new();
+    sim.quiet();
+    sim.run_mut().energy = 0.5;
+    let start_x = sim.position().x;
+    let car = sim.car(Vec2::new(LANES[0], 400.), SAME_DIRECTION_SPEED);
+    sim.controls().brake = true;
+    sim.controls().boost = true;
+    sim.controls().move_x = -1.;
+    sim.steps(32);
+    let run = sim.run();
+    assert_eq!(run.speed, 225.);
+    assert!(!run.boosting);
+    assert!(run.energy > 0.5);
+    assert!((run.distance - 112.5).abs() < 0.01);
+    assert!(sim.position().x < start_x);
+    assert!((sim.0.world().get::<Position>(car).unwrap().0.y - 357.5).abs() < 0.01);
+    sim.controls().boost = false;
+    sim.controls().brake = false;
+    sim.steps(1);
+    assert_eq!(sim.run().speed, 300.);
+    sim.controls().brake = true;
+    sim.controls().restart = true;
+    sim.steps(1);
+    assert!(!sim.controls().brake);
+    assert_eq!(sim.run().distance, 0.);
+    sim.run_mut().finished = true;
+    sim.controls().brake = true;
+    sim.steps(5);
+    assert_eq!(sim.run().distance, 0.);
+}
+
+#[test]
+fn every_vehicle_keeps_moving_faster_than_traffic_when_braking_at_every_difficulty() {
+    for model in crate::vehicles::MODELS {
+        let tuning = crate::vehicles::Vehicle::new("test".into(), model).tuning();
+        assert!(tuning.brake_speed() > SAME_DIRECTION_SPEED);
+        for level in [1, 5, 10, 50] {
+            let multiplier = Difficulty::at(level).speed_multiplier;
+            assert!(tuning.brake_speed() * multiplier < tuning.cruise_speed * multiplier);
+        }
     }
 }

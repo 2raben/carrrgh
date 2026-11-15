@@ -27,6 +27,7 @@ pub enum Intent {
     Open,
     Retry,
     Refresh(u32),
+    Bindings(crate::bindings::BindingIntent),
 }
 
 #[derive(Resource)]
@@ -90,6 +91,7 @@ pub struct GaragePlugin;
 impl Plugin for GaragePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Garage>()
+            .init_resource::<crate::bindings::Bindings>()
             .init_resource::<ActiveVehicle>()
             .configure_sets(FixedUpdate, GameSystems.run_if(garage_closed))
             .add_systems(Update, update_garage);
@@ -178,7 +180,7 @@ fn start_job(garage: &mut Garage, storage: &Storage, account: &Account, request:
 }
 
 #[derive(SystemParam)]
-struct DriveState<'w> {
+pub(crate) struct DriveState<'w> {
     run: ResMut<'w, Run>,
     controls: ResMut<'w, Controls>,
     active: ResMut<'w, ActiveVehicle>,
@@ -187,12 +189,13 @@ struct DriveState<'w> {
     next_phase: ResMut<'w, NextState<ProfilePhase>>,
 }
 
-fn update_garage(
+pub(crate) fn update_garage(
     mut garage: ResMut<Garage>,
     storage: Res<Storage>,
     mut account: ResMut<Account>,
     phase: Res<State<ProfilePhase>>,
     drive: DriveState,
+    mut bindings: ResMut<crate::bindings::Bindings>,
 ) {
     let DriveState {
         mut run,
@@ -281,6 +284,17 @@ fn update_garage(
     }
     let intents = std::mem::take(&mut garage.intents);
     for intent in intents {
+        if let Intent::Bindings(action) = intent {
+            if garage.open {
+                bindings.apply(action);
+                garage.focus = 0;
+                garage.revision += 1;
+            }
+            continue;
+        }
+        if bindings.open {
+            continue;
+        }
         if garage.busy() {
             continue;
         }

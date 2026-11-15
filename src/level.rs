@@ -136,7 +136,7 @@ pub struct TrafficFlow {
 }
 
 /// Whether three cars can pack all lanes into a short longitudinal band.
-/// Relative car spacing is independent of player speed. The initial cruise
+/// Relative car spacing is independent of player speed. The minimum braking
 /// speed gives the longest remaining lifetime, including later boost releases.
 #[cfg(test)]
 pub fn blocks_all_lanes(cars: [(Traffic, Vec2); 3], cruise_speed: f32) -> bool {
@@ -150,7 +150,7 @@ pub fn blocks_all_lanes(cars: [(Traffic, Vec2); 3], cruise_speed: f32) -> bool {
 }
 
 fn blocks_lanes_for(cars: [(Traffic, Vec2); 3], tuning: &PlayerTuning) -> bool {
-    let cruise_speed = tuning.cruise_speed;
+    let cruise_speed = tuning.brake_speed();
     let covers_road = [
         [0, 1, 2],
         [0, 2, 1],
@@ -230,8 +230,8 @@ fn lane_sharing_is_safe(
         return -ahead >= TRAFFIC_SPACING;
     }
     let closing = same.0.speed - oncoming.0.speed;
-    // The initial cruise speed gives the lower vehicle its longest lifetime.
-    let exit_speed = tuning.cruise_speed - same.0.speed;
+    // The minimum braking speed gives the lower vehicle its longest lifetime.
+    let exit_speed = tuning.brake_speed() - same.0.speed;
     let lifetime = if exit_speed > 0.0 {
         (same.1.y - DESPAWN_Y).max(0.0) / exit_speed
     } else {

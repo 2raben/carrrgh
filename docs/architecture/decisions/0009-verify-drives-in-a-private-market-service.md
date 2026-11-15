@@ -3,6 +3,7 @@ tags: [adr]
 status: accepted
 date: 2026-11-12
 amends: [0007-persist-profiles-behind-a-store-interface.md]
+amended-by: [0012-persist-local-key-bindings-and-replay-braking.md]
 sources:
   - src/market.rs
   - src/drive_proof.rs
@@ -12,6 +13,9 @@ sources:
 ---
 
 # 0009 — Verify drives in a private authoritative market service
+
+Protocol version 2 adds brake to the recorded input, as described in
+[ADR 0012](0012-persist-local-key-bindings-and-replay-braking.md).
 
 ## Context
 

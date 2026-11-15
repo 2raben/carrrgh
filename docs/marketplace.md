@@ -87,3 +87,10 @@ for all ten models. Graphical testing covers the local garage. A separate
 two-machine SSH session and physical controller play test are still useful before
 inviting a larger test group. The serial service and bounded replay are intended
 for this private experiment, not a publicly exposed marketplace.
+
+## Input compatibility
+
+Protocol version 2 records steering, boost and brake for each fixed tick. Update
+client and server together; version-1 clients are rejected. Keyboard bindings are
+local preferences and are not sent to the market. Braking is verified by the same
+simulation used during play.

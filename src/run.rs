@@ -156,7 +156,7 @@ pub fn advance_run(
     if !controls.boost {
         run.exhausted = false;
     }
-    run.boosting = controls.boost && !run.exhausted && run.energy > 0.0;
+    run.boosting = !controls.brake && controls.boost && !run.exhausted && run.energy > 0.0;
     // A partially full final step receives only its available share of boost.
     let boosted_fraction = if run.boosting {
         (run.energy / (tuning.boost_drain * dt)).min(1.0)
@@ -175,6 +175,9 @@ pub fn advance_run(
     run.speed = (tuning.cruise_speed
         + (tuning.boost_speed - tuning.cruise_speed) * boosted_fraction)
         * speed_multiplier;
+    if controls.brake {
+        run.speed = tuning.brake_speed() * speed_multiplier;
+    }
     run.previous_distance = run.distance;
     run.distance += f64::from(run.speed * dt);
 }
