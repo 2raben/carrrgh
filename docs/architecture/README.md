@@ -305,7 +305,10 @@ operator-approved credentials. `CAR_DRIVE_MARKET_CONFIG` selects a network store
 instead of a local save. Each database has a local/market realm marker to prevent
 cross-use. The service authenticates tokens, binds only loopback and requires an
 SSH tunnel for another machine. No public service is deployed. It serializes
-authenticated operations and uses the same atomic garage implementation.
+authenticated operations and uses the same atomic garage implementation. Market
+databases run their SQLite work on the service's own worker thread, never on
+Bevy's shared I/O pool, so a server never waits behind blocking client requests
+in the same process (the TCP test runs both ends together).
 
 Online drives begin with a server-issued seed and vehicle snapshot. At 64 Hz the
 client records quantized steering and boost, then submits those inputs on game
